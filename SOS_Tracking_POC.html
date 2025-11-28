@@ -62,7 +62,7 @@ document.getElementById('openNative').onclick = () => {
 // place initial victim marker
 function placeVictim(p) {
   if (!victimMarker) {
-    victimMarker = L.marker([p.lat, p.lng], { title: 'Victim (sim)' }).addTo(map);
+    victimMarker = L.marker([p.lat, p.lng], { title: 'Victim' }).addTo(map);
   } else {
     victimMarker.setLatLng([p.lat, p.lng]);
   }
@@ -144,5 +144,6 @@ if (navigator.geolocation) {
   </script>
 </body>
 </html>
+
 
 
