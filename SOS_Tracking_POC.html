@@ -98,26 +98,25 @@ function initMap() {
 /* Place or update victim marker */
 function placeVictim(p){
   const pos = { lat: p.lat, lng: p.lng };
+
+  const victimIcon = {
+    url: "victim_sos_pin.svg",    // your file in project root
+    scaledSize: new google.maps.Size(50, 50),  // adjust size
+    anchor: new google.maps.Point(25, 50)      // bottom center
+  };
+
   if(!victimMarker){
     victimMarker = new google.maps.Marker({
       position: pos,
       map: map,
-      title: 'Victim',
-      icon: {
-        path: google.maps.SymbolPath.CIRCLE,
-        scale: 7,
-        fillColor: '#d9534f',
-        fillOpacity: 1,
-        strokeWeight: 2,
-        strokeColor: '#fff'
-      }
+      title: "Victim (SOS)",
+      icon: victimIcon
     });
   } else {
     victimMarker.setPosition(pos);
   }
+
   lastVictim = { lat: p.lat, lng: p.lng, name: p.name || '' };
-  // optional: update statusEl if you want visible UI
-  // statusEl.innerText = `Victim: ${lastVictim.name} (${lastVictim.lat.toFixed(5)}, ${lastVictim.lng.toFixed(5)})`;
 }
 
 /* Place or update rescuer marker (bike icon via SVG path) */
@@ -278,4 +277,5 @@ Set interval as required (3s for your system).
   </script>
 </body>
 </html>
+
 
