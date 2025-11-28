@@ -66,7 +66,7 @@ function placeVictim(p) {
   } else {
     victimMarker.setLatLng([p.lat, p.lng]);
   }
-  victimMarker.bindPopup(`<b>Victim (sim)</b><br>${p.name}`).openPopup();
+  victimMarker.bindPopup(`<b>Victim</b><br>${p.name}`).openPopup();
   lastVictim = p;
   statusEl.innerText = `Victim: ${p.name} (${p.lat.toFixed(5)}, ${p.lng.toFixed(5)})`;
 }
@@ -144,6 +144,7 @@ if (navigator.geolocation) {
   </script>
 </body>
 </html>
+
 
 
 
