@@ -1,278 +1,280 @@
 <!doctype html>
 <html>
 <head>
-  <meta charset="utf-8"/>
-  <meta name="viewport" content="width=device-width,initial-scale=1"/>
-  <title>SOS POC — simulated moving victim (route updates fixed)</title>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>SOS POC — live rescuer tracking to moving victim</title>
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
   <style>
-    html,body,#map { height:100%; margin:0; padding:0; }
-    #topbar {
-      position:absolute; left:8px; top:8px; z-index:1000;
-      background:rgba(255,255,255,0.95); padding:8px; border-radius:6px;
-      font-family:Arial; box-shadow:0 1px 4px rgba(0,0,0,0.2);
-      display:flex; gap:8px; align-items:center;
+    html,body,#map{ height:100%; margin:0; padding:0; font-family: Arial, Helvetica, sans-serif; }
+    #controls{
+      position:absolute; left:8px; top:8px; z-index:1200;
+      background: rgba(255,255,255,0.95); padding:10px; border-radius:8px;
+      box-shadow:0 2px 8px rgba(0,0,0,0.12);
     }
-    #topbar button{ margin-left:8px; padding:6px 8px; }
-    #status { font-size:14px; }
-    .rescuer-div-icon {
-      display:flex;
-      align-items:center;
-      justify-content:center;
-      width:36px;
-      height:36px;
-      border-radius:50%;
-      background: rgba(0,123,255,0.95);
-      color: white;
-      font-size:18px;
-      box-shadow: 0 1px 3px rgba(0,0,0,0.4);
-      border: 2px solid white;
-    }
+    .btn{ background:#1a73e8; color:#fff; padding:8px 10px; border:none; border-radius:6px; cursor:pointer; font-weight:600; }
+    .btn.ghost{ background: rgba(0,0,0,0.6); }
+    #dbg{ position:absolute; right:8px; top:8px; z-index:1200; background:rgba(255,255,255,0.95); padding:8px; border-radius:8px; font-family:monospace; font-size:12px; max-width:320px; max-height:220px; overflow:auto; }
+    .rescuer-div-icon{ display:flex; align-items:center; justify-content:center; width:36px; height:36px; border-radius:50%; background: rgba(0,123,255,0.95); color:white; font-size:18px; box-shadow:0 1px 3px rgba(0,0,0,0.4); border:2px solid white; }
   </style>
 </head>
 <body>
-  <div id="topbar" style="display:none;">
-    <div>
-      <div id="status">Initializing simulation...</div>
-      <div id="hint" style="font-size:12px;color:#444">Hint: open over HTTPS for geolocation to work on mobile.</div>
+  <div id="controls">
+    <div style="font-weight:700;margin-bottom:6px">SOS Live Demo</div>
+    <div style="display:flex; gap:6px;">
+      <button id="centerMe" class="btn">Center on Me</button>
+      <button id="openMaps" class="btn ghost">Open in Google Maps</button>
     </div>
-    <div style="margin-left:auto;">
-      <button id="openNative">Open in Google Maps</button>
+    <div style="margin-top:8px; font-size:13px; color:#333;">
+      <div id="status">Initializing…</div>
     </div>
   </div>
 
+  <div id="dbg">debug</div>
   <div id="map"></div>
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script>
-/* CONFIG */
-const SIMULATION_INTERVAL_MS = 10000; // 10s
+/* ================= CONFIG ================= */
+const SIMULATION_INTERVAL_MS = 10000; // victim move interval (ms). Change to 3000/5000 when using real API if desired.
 const SIM_POINTS = [
-  { name: 'Rasulgarh Chowk', lat: 20.295550, lng: 85.857514 },
-  { name: 'Vani Vihar Chowk', lat: 20.302518, lng: 85.840945 },
-  { name: 'Acharya Vihar Chowk', lat: 20.303630, lng: 85.800150 },
-  { name: 'Jaydev Vihar Chowk', lat: 20.299727, lng: 85.817264 },
-  { name: 'Nayapalli Chowk', lat: 20.289898, lng: 85.810219 },
-  { name: 'CRP Square', lat: 20.286389, lng: 85.807222 },
-  { name: 'Fire Station Square', lat: 20.279040, lng: 85.799265 },
-  { name: 'Baramunda Square', lat: 20.277640, lng: 85.794852 }
+  { name:'Rasulgarh', lat:20.295550, lng:85.857514 },
+  { name:'Vani Vihar', lat:20.302518, lng:85.840945 },
+  { name:'Acharya Vihar', lat:20.303630, lng:85.800150 },
+  { name:'Jaydev Vihar', lat:20.299727, lng:85.817264 },
+  { name:'Nayapalli', lat:20.289898, lng:85.810219 },
+  { name:'CRP', lat:20.286389, lng:85.807222 },
+  { name:'Fire Station', lat:20.279040, lng:85.799265 },
+  { name:'Baramunda', lat:20.277640, lng:85.794852 }
 ];
-const DEST_MOVE_THRESHOLD_M = 8;
-const MIN_ROUTE_INTERVAL_MS = 3000;
-/* END CONFIG */
+const DEST_MOVE_THRESHOLD_M = 4;   // small threshold to force route recalc when victim moves
+const MIN_ROUTE_INTERVAL_MS = 2500; // throttle route calls
+const GPS_INTERPOLATION_MS = 800;   // marker smoothing for rescuer between GPS fixes
+/* ========================================= */
 
 const statusEl = document.getElementById('status');
-const openNativeBtn = document.getElementById('openNative');
-function dbg(msg){ console.log(msg); }
+const dbgEl = document.getElementById('dbg');
+const centerBtn = document.getElementById('centerMe');
+const openMapsBtn = document.getElementById('openMaps');
+
+function dbg(msg){ const t=new Date().toLocaleTimeString(); dbgEl.innerText = `${t} — ${msg}\n` + dbgEl.innerText; console.log(msg); }
 function setStatus(msg){ statusEl.innerText = msg; dbg('STATUS: ' + msg); }
 
-/* Initialize map */
-let map = L.map('map').setView([20.29555,85.857514], 13);
-L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19 }).addTo(map);
+/* Initialize Leaflet */
+const map = L.map('map', { zoomControl:true }).setView([20.29555,85.857514], 13);
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom:19 }).addTo(map);
 
 /* State */
 let victimMarker = null;
 let rescuerMarker = null;
 let routeLine = null;
-let currentIndex = 0;
-let lastVictim = null; // previous victim location object {lat,lng,ts,name}
-let rescuerPos = null;
+let simIndex = 0;
+let lastVictim = null;     // {lat,lng,ts,name}
+let rescuerPos = null;     // {lat,lng}
 let simTimer = null;
-let lastRouteTime = 0;
 let watchId = null;
+let lastRouteTime = 0;
 
-/* Rescuer icon */
-const rescuerEmoji = '🏍️'; // change to '🚗' or '🚶' if desired
-const rescuerIcon = L.divIcon({
-  html: `<div class="rescuer-div-icon">${rescuerEmoji}</div>`,
-  className: '',
-  iconSize: [36,36],
-  iconAnchor: [18,18]
-});
+/* Rescuer icon (emoji bike) */
+const rescuerIcon = L.divIcon({ html:`<div class="rescuer-div-icon">🏍️</div>`, className:'', iconSize:[36,36], iconAnchor:[18,18] });
 
-/* Utility: distance in meters */
+/* Haversine distance in meters */
 function distanceMeters(a,b){
   if(!a||!b) return Infinity;
-  const R=6371000, toRad=v=>v*Math.PI/180;
-  const dLat=toRad(b.lat-a.lat), dLon=toRad(b.lng-a.lng);
-  const lat1=toRad(a.lat), lat2=toRad(b.lat);
-  const sinDLat=Math.sin(dLat/2), sinDLon=Math.sin(dLon/2);
+  const R = 6371000, toRad = v => v * Math.PI / 180;
+  const dLat = toRad(b.lat - a.lat), dLon = toRad(b.lng - a.lng);
+  const lat1 = toRad(a.lat), lat2 = toRad(b.lat);
+  const sinDLat = Math.sin(dLat/2), sinDLon = Math.sin(dLon/2);
   const aa = sinDLat*sinDLat + sinDLon*sinDLon * Math.cos(lat1) * Math.cos(lat2);
-  const c = 2*Math.atan2(Math.sqrt(aa), Math.sqrt(1-aa));
+  const c = 2 * Math.atan2(Math.sqrt(aa), Math.sqrt(1-aa));
   return R * c;
 }
 
-/* Place victim (does NOT compute movement) */
-function placeVictimMarker(p){
-  if(!victimMarker){
-    victimMarker = L.marker([p.lat, p.lng], { title: 'Victim' }).addTo(map);
-  } else {
-    victimMarker.setLatLng([p.lat, p.lng]);
-  }
-  victimMarker.bindPopup(`<b>Victim</b><br>${p.name || ''}`).openPopup();
+/* Place or update victim marker */
+function placeVictim(p){
+  if(!victimMarker) victimMarker = L.marker([p.lat,p.lng], { title:'Victim' }).addTo(map);
+  else victimMarker.setLatLng([p.lat,p.lng]);
+  victimMarker.bindPopup(`<b>Victim</b><br>${p.name||''}`).openPopup();
+  lastVictim = { lat:p.lat, lng:p.lng, ts:p.ts||Date.now(), name:p.name||'' };
+  setStatus(`Victim: ${lastVictim.name} (${lastVictim.lat.toFixed(5)}, ${lastVictim.lng.toFixed(5)})`);
 }
 
-/* Place rescuer */
+/* Place or update rescuer marker */
 function placeRescuer(p){
-  if(!rescuerMarker){
-    rescuerMarker = L.marker([p.lat, p.lng], { icon: rescuerIcon, title: 'You (rescuer)' }).addTo(map);
-  } else {
-    rescuerMarker.setLatLng([p.lat, p.lng]);
-  }
+  if(!rescuerMarker) rescuerMarker = L.marker([p.lat,p.lng], { icon: rescuerIcon, title:'You (rescuer)' }).addTo(map);
+  else rescuerMarker.setLatLng([p.lat,p.lng]);
 }
 
-/* Draw route with OSRM */
+/* Smoothly animate marker from current -> to over duration (ms) */
+function animateMarkerTo(marker, fromLatLng, toLatLng, durationMs){
+  if(!marker) { placeRescuer(toLatLng); return; }
+  const steps = Math.max(6, Math.floor(durationMs / 50));
+  let i = 0;
+  const lat1 = fromLatLng.lat, lon1 = fromLatLng.lng;
+  const lat2 = toLatLng.lat, lon2 = toLatLng.lng;
+  const handle = setInterval(()=>{
+    i++;
+    const t = i/steps;
+    const lat = lat1 + (lat2 - lat1) * t;
+    const lon = lon1 + (lon2 - lon1) * t;
+    marker.setLatLng([lat, lon]);
+    if(i >= steps) clearInterval(handle);
+  }, Math.max(30, Math.floor(durationMs / steps)));
+}
+
+/* Request route from OSRM (public demo router) and draw it; throttled */
 async function drawRoute(origin, dest){
-  try {
+  try{
     if(!origin || !dest) return;
     const now = Date.now();
-    if(now - lastRouteTime < MIN_ROUTE_INTERVAL_MS){
-      dbg('Route throttled');
-      return;
-    }
+    if(now - lastRouteTime < MIN_ROUTE_INTERVAL_MS){ dbg('Route call throttled'); return; }
     lastRouteTime = now;
     const url = `https://router.project-osrm.org/route/v1/driving/${origin.lng},${origin.lat};${dest.lng},${dest.lat}?overview=full&geometries=geojson`;
-    dbg('OSRM url: ' + url);
-    const r = await fetch(url);
-    if(!r.ok) { dbg('OSRM status ' + r.status); return; }
-    const j = await r.json();
-    if(!j.routes || !j.routes.length) { dbg('no OSRM routes'); return; }
-    const coords = j.routes[0].geometry.coordinates;
-    const latlngs = coords.map(c=>[c[1], c[0]]);
+    dbg('OSRM -> ' + url);
+    const res = await fetch(url);
+    if(!res.ok){ dbg('OSRM failed ' + res.status); return; }
+    const j = await res.json();
+    if(!j.routes || !j.routes.length){ dbg('No route returned'); return; }
+    const coords = j.routes[0].geometry.coordinates; // [ [lon,lat], ... ]
+    const latlngs = coords.map(c => [c[1], c[0]]);
     if(routeLine) routeLine.setLatLngs(latlngs);
-    else routeLine = L.polyline(latlngs, { weight:5, color:'#2a9df4' }).addTo(map);
+    else routeLine = L.polyline(latlngs, { weight:5, color:'#1a73e8' }).addTo(map);
 
+    // Keep map focused to show both
     const bounds = L.latLngBounds(latlngs);
     if(victimMarker) bounds.extend(victimMarker.getLatLng());
     if(rescuerMarker) bounds.extend(rescuerMarker.getLatLng());
     map.fitBounds(bounds.pad(0.25));
-    dbg('Route drawn, duration(s): ' + (j.routes[0].duration || 'n/a'));
-  } catch (e) {
+    dbg('Route drawn (OSRM).');
+  }catch(e){
     dbg('drawRoute error: ' + e);
   }
 }
 
-/* Show first victim immediately */
-(function showInitialVictim(){
+/* Simulation: show first victim immediately, then loop */
+(function initSimulation(){
   const p = SIM_POINTS[0];
-  placeVictimMarker({lat:p.lat, lng:p.lng, name:p.name});
-  lastVictim = { lat:p.lat, lng:p.lng, ts: Date.now(), name: p.name };
+  placeVictim({ lat:p.lat, lng:p.lng, name:p.name });
   map.setView([p.lat, p.lng], 14);
-  currentIndex = 1;
-  setStatus(`Victim: ${p.name} (${p.lat.toFixed(5)}, ${p.lng.toFixed(5)})`);
+  simIndex = 1;
+
+  // start repeating updates
+  simTimer = setInterval(async ()=>{
+    const prev = lastVictim ? { lat:lastVictim.lat, lng:lastVictim.lng } : null;
+    const p = SIM_POINTS[simIndex];
+    const newVictim = { lat:p.lat, lng:p.lng, ts:Date.now(), name:p.name };
+
+    // Update victim marker & store previous -> new to compute movement
+    placeVictim(newVictim);
+
+    // If rescuer known, recalc route each victim move beyond threshold
+    if(rescuerPos){
+      const moved = prev ? distanceMeters(prev, newVictim) : Infinity;
+      dbg('Victim moved (m): ' + moved.toFixed(1));
+      if(moved >= DEST_MOVE_THRESHOLD_M){
+        await drawRoute(rescuerPos, newVictim);
+      } else {
+        dbg('Victim movement < threshold, no route recalc');
+      }
+    } else {
+      map.panTo([newVictim.lat,newVictim.lng]);
+    }
+
+    simIndex = (simIndex + 1) % SIM_POINTS.length;
+  }, SIMULATION_INTERVAL_MS);
 })();
 
-/* Simulation step: compute prevVictim -> newVictim then place and decide route */
-async function simulationStep(){
-  const prev = lastVictim ? { lat: lastVictim.lat, lng: lastVictim.lng } : null;
-  const p = SIM_POINTS[currentIndex];
-  const newVictim = { lat: p.lat, lng: p.lng, ts: Date.now(), name: p.name };
+/* Geolocation: request once then watch; interpolate marker between GPS fixes */
+async function startRescuerGeolocation(){
+  if(!('geolocation' in navigator)){ setStatus('Geolocation unsupported by browser'); dbg('No geolocation'); return; }
 
-  // update marker & lastVictim
-  placeVictimMarker(newVictim);
-  lastVictim = newVictim;
-
-  // if rescuer known, compute movement from prev -> new and update route if needed
-  if(rescuerPos){
-    const moved = prev ? distanceMeters(prev, newVictim) : Infinity;
-    dbg('Victim moved meters: ' + moved.toFixed(1));
-    if(moved >= DEST_MOVE_THRESHOLD_M){
-      await drawRoute(rescuerPos, newVictim);
-    } else {
-      dbg('Victim moved < threshold; not recalculating route');
-    }
-  } else {
-    map.panTo([newVictim.lat, newVictim.lng]);
-  }
-
-  currentIndex = (currentIndex + 1) % SIM_POINTS.length;
-}
-
-/* Start simulation */
-simTimer = setInterval(simulationStep, SIMULATION_INTERVAL_MS);
-
-/* Geolocation logic: request once then watch */
-async function ensureGeolocationRequested(){
-  if(!('geolocation' in navigator)){
-    setStatus('Geolocation not supported');
-    return;
-  }
-
-  // permissions check (best-effort)
-  try {
+  // Try permission check (best-effort)
+  try{
     if(navigator.permissions && navigator.permissions.query){
-      const p = await navigator.permissions.query({ name: 'geolocation' });
-      dbg('permission state: ' + p.state);
-      if(p.state === 'denied'){
-        setStatus('Location permission denied. Allow in site settings.');
-        // still attempt watch (may not prompt)
-      }
-      p.onchange = ()=> dbg('permission changed: ' + p.state);
+      const p = await navigator.permissions.query({ name:'geolocation' });
+      dbg('Permission state: ' + p.state);
+      p.onchange = ()=> dbg('Permission changed: ' + p.state);
+      if(p.state === 'denied') setStatus('Location blocked — allow in site settings');
     }
-  } catch(e){
-    dbg('permissions check failed: ' + e);
-  }
+  }catch(e){ dbg('Permissions API not supported: ' + e); }
 
-  // request a one-time position (may prompt)
+  // request one shot (may prompt)
   navigator.geolocation.getCurrentPosition(pos=>{
-    rescuerPos = { lat: pos.coords.latitude, lng: pos.coords.longitude };
-    placeRescuer(rescuerPos);
-    setStatus('Your location obtained; route origin set to your device.');
-    // draw route immediately if victim exists
+    const newPos = { lat: pos.coords.latitude, lng: pos.coords.longitude };
+    dbg('Initial GPS fix: ' + newPos.lat.toFixed(6) + ',' + newPos.lng.toFixed(6));
+    // place rescuer marker
+    placeRescuer(newPos);
+    rescuerPos = newPos;
+    setStatus('Rescuer location obtained. Navigation origin set.');
+    // draw route immediately if victim available
     if(lastVictim) drawRoute(rescuerPos, lastVictim);
-    // start watch
-    startWatchPosition();
   }, err=>{
     dbg('getCurrentPosition error: ' + JSON.stringify(err));
-    if(err && err.code === 1) setStatus('Permission denied. Allow and reload.');
-    else if(err && err.code === 2) setStatus('Position unavailable; waiting for fix.');
-    else if(err && err.code === 3) setStatus('Timeout while getting location; watching for updates.');
-    else setStatus('Geolocation error (see console).');
-    // still start watch to catch future fixes
-    startWatchPosition();
+    if(err && err.code === 1) setStatus('Permission denied. Allow location and reload.');
+    else if(err && err.code === 2) setStatus('Position unavailable (GPS off?)');
+    else if(err && err.code === 3) setStatus('Timeout getting location — starting watch.');
+    else setStatus('Geolocation error (see debug).');
   }, { enableHighAccuracy:true, timeout:8000, maximumAge:0 });
-}
 
-function startWatchPosition(){
-  if(!('geolocation' in navigator)) return;
-  if(watchId) return;
+  // continuous watch - on each fix interpolate marker and recalc route
   watchId = navigator.geolocation.watchPosition(pos=>{
-    const prevRescuer = rescuerPos ? { lat: rescuerPos.lat, lng: rescuerPos.lng } : null;
-    rescuerPos = { lat: pos.coords.latitude, lng: pos.coords.longitude };
-    placeRescuer(rescuerPos);
-    dbg('watchPosition update: ' + rescuerPos.lat + ',' + rescuerPos.lng);
-    // if victim present, update route (throttled)
+    const newPos = { lat: pos.coords.latitude, lng: pos.coords.longitude };
+    dbg('GPS update: ' + newPos.lat.toFixed(6) + ',' + newPos.lng.toFixed(6));
+    if(!rescuerPos){
+      // first time
+      rescuerPos = newPos;
+      placeRescuer(newPos);
+    } else {
+      // smooth movement from existing marker position -> newPos
+      const fromLatLng = rescuerMarker ? { lat: rescuerMarker.getLatLng().lat, lng: rescuerMarker.getLatLng().lng } : rescuerPos;
+      animateMarkerTo(rescuerMarker, fromLatLng, newPos, GPS_INTERPOLATION_MS);
+      rescuerPos = newPos;
+    }
+
+    // Recalculate route to latest victim coordinates (if available)
     if(lastVictim){
+      // throttle with MIN_ROUTE_INTERVAL_MS
       const now = Date.now();
       if(now - lastRouteTime >= MIN_ROUTE_INTERVAL_MS){
         lastRouteTime = now;
         drawRoute(rescuerPos, lastVictim);
-      } else dbg('Route update throttled on rescuer move');
+      } else dbg('Route recalculation throttled on GPS update');
     }
   }, err=>{
     dbg('watchPosition error: ' + JSON.stringify(err));
   }, { enableHighAccuracy:true, maximumAge:2000, timeout:10000 });
 }
 
-/* UI button */
-openNativeBtn.addEventListener('click', ()=>{
-  if(!lastVictim) return alert('No victim location yet');
+/* UI actions */
+centerBtn.addEventListener('click', ()=>{
+  if(!rescuerPos) return alert('Rescuer location not available yet (allow location).');
+  map.setView([rescuerPos.lat, rescuerPos.lng], 16);
+});
+
+openMapsBtn.addEventListener('click', ()=>{
+  if(!lastVictim) return alert('Victim location not available yet.');
+  // This opens Google Maps app on mobile (device will be origin)
   const url = `https://www.google.com/maps/dir/?api=1&destination=${lastVictim.lat},${lastVictim.lng}&travelmode=driving`;
   window.location.href = url;
 });
 
-/* Start geolocation attempts */
-ensureGeolocationRequested();
+/* Start rescuer geolocation (will prompt on HTTPS) */
+startRescuerGeolocation();
 
-/* Secure origin hint */
+/* Security hint */
 (function checkOrigin(){
-  const isLocal = location.hostname === 'localhost' || location.hostname === '127.0.0.1';
+  const isLocal = ['localhost','127.0.0.1'].includes(location.hostname);
   if(!(location.protocol === 'https:' || isLocal)){
-    dbg('SECURITY: Page not served over HTTPS nor localhost. Geolocation may be blocked. Use GitHub Pages or localhost for testing.');
-    setStatus('Serve via HTTPS (GitHub Pages) or use http://localhost for geolocation on mobile.');
-  } else dbg('Secure origin ok.');
+    dbg('WARNING: Page not served over HTTPS. Geolocation may be blocked by browser. Serve via GitHub Pages or use http://localhost for testing.');
+    setStatus('Serve via HTTPS (GitHub Pages) or use http://localhost to enable geolocation on mobile.');
+  } else dbg('Secure origin OK.');
 })();
+
+/* NOTES:
+ - To switch victim simulation to real API: replace the simulation timer with a polling call to your API endpoint
+   that returns JSON { lat:number, lng:number, ts?:string } and call placeVictim() with returned coords.
+ - OSRM is used for routing here (public demo server). For production use consider Google Directions API (requires key + billing).
+*/
   </script>
 </body>
 </html>
-
