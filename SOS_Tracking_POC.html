@@ -1,0 +1,146 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>SOS POC — simulated moving victim</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+  <style>
+    html,body,#map { height:100%; margin:0; padding:0; }
+    #topbar {
+      position:absolute; left:8px; top:8px; z-index:1000;
+      background:rgba(255,255,255,0.95); padding:8px; border-radius:6px;
+      font-family:Arial; box-shadow:0 1px 4px rgba(0,0,0,0.2);
+    }
+    #topbar button{ margin-left:8px; }
+  </style>
+</head>
+<body>
+  <div id="topbar">
+    <span id="status">Initializing simulation...</span>
+    <button id="openNative">Open in Google Maps</button>
+  </div>
+  <div id="map"></div>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script>
+/* ================== CONFIG ================== */
+// Change interval here: 10000 (10s) or 30000 (30s)
+const SIMULATION_INTERVAL_MS = 10000; // set 10000 or 30000
+
+// Simulation points (sequence): name, lat, lng
+const SIM_POINTS = [
+  { name: 'Rasulgarh Chowk', lat: 20.295550, lng: 85.857514 },
+  { name: 'Vani Vihar Chowk', lat: 20.302518, lng: 85.840945 },
+  { name: 'Acharya Vihar Chowk', lat: 20.303630, lng: 85.800150 },
+  { name: 'Jaydev Vihar Chowk', lat: 20.299727, lng: 85.817264 },
+  { name: 'Nayapalli Chowk', lat: 20.289898, lng: 85.810219 },
+  { name: 'CRP Square', lat: 20.286389, lng: 85.807222 },
+  { name: 'Fire Station Square', lat: 20.279040, lng: 85.799265 },
+  { name: 'Baramunda Square', lat: 20.277640, lng: 85.794852 }
+];
+/* ============================================ */
+
+let map = L.map('map').setView([20.29555,85.857514], 13);
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19 }).addTo(map);
+
+let victimMarker = null;
+let rescuerMarker = null;
+let routeLine = null;
+let currentIndex = 0;
+let lastVictim = null;
+let rescuerPos = null;
+
+// UI controls
+const statusEl = document.getElementById('status');
+document.getElementById('openNative').onclick = () => {
+  if (!lastVictim) return alert('No victim location yet');
+  const url = `https://www.google.com/maps/dir/?api=1&destination=${lastVictim.lat},${lastVictim.lng}&travelmode=driving`;
+  window.location.href = url;
+};
+
+// place initial victim marker
+function placeVictim(p) {
+  if (!victimMarker) {
+    victimMarker = L.marker([p.lat, p.lng], { title: 'Victim (sim)' }).addTo(map);
+  } else {
+    victimMarker.setLatLng([p.lat, p.lng]);
+  }
+  victimMarker.bindPopup(`<b>Victim (sim)</b><br>${p.name}`).openPopup();
+  lastVictim = p;
+  statusEl.innerText = `Victim: ${p.name} (${p.lat.toFixed(5)}, ${p.lng.toFixed(5)})`;
+}
+
+// place/update rescuer marker
+function placeRescuer(p) {
+  if (!rescuerMarker) {
+    rescuerMarker = L.circleMarker([p.lat, p.lng], { radius:6 }).addTo(map).bindPopup('You (rescuer)');
+  } else {
+    rescuerMarker.setLatLng([p.lat, p.lng]);
+  }
+}
+
+// draw route using OSRM public router (demo). from: {lat,lng}, to: {lat,lng}
+async function drawRoute(from, to) {
+  try {
+    const url = `https://router.project-osrm.org/route/v1/driving/${from.lng},${from.lat};${to.lng},${to.lat}?overview=full&geometries=geojson`;
+    const r = await fetch(url);
+    if (!r.ok) throw new Error('OSRM route fetch failed ' + r.status);
+    const j = await r.json();
+    if (!j.routes || !j.routes.length) throw new Error('no route returned');
+    const coords = j.routes[0].geometry.coordinates; // [ [lon,lat], ... ]
+    const latlngs = coords.map(c => [c[1], c[0]]);
+    if (routeLine) routeLine.setLatLngs(latlngs);
+    else routeLine = L.polyline(latlngs, { weight: 5 }).addTo(map);
+
+    // zoom/fit so both present
+    const bounds = L.latLngBounds(latlngs);
+    if (victimMarker) bounds.extend(victimMarker.getLatLng());
+    if (rescuerMarker) bounds.extend(rescuerMarker.getLatLng());
+    map.fitBounds(bounds.pad(0.25));
+  } catch (e) {
+    console.warn('drawRoute error', e);
+  }
+}
+
+// Simulation step: advance victim marker to next point and update route
+async function simulationStep() {
+  const p = SIM_POINTS[currentIndex];
+  placeVictim(p);
+
+  if (rescuerPos) {
+    await drawRoute(rescuerPos, { lat: p.lat, lng: p.lng });
+  } else {
+    // center map on victim if rescuer unknown
+    map.panTo([p.lat, p.lng]);
+  }
+
+  currentIndex = (currentIndex + 1) % SIM_POINTS.length;
+}
+
+// start simulation loop
+simulationStep(); // initial
+const simTimer = setInterval(simulationStep, SIMULATION_INTERVAL_MS);
+
+// get rescuer position (browser)
+if (navigator.geolocation) {
+  navigator.geolocation.getCurrentPosition(p => {
+    rescuerPos = { lat: p.coords.latitude, lng: p.coords.longitude };
+    placeRescuer(rescuerPos);
+    map.setView([rescuerPos.lat, rescuerPos.lng], 14);
+    // watch rescuer movements and update
+    navigator.geolocation.watchPosition(wp => {
+      rescuerPos = { lat: wp.coords.latitude, lng: wp.coords.longitude };
+      placeRescuer(rescuerPos);
+    }, err => console.warn('watchPosition error', err), { enableHighAccuracy: true, maximumAge: 2000 });
+  }, err => {
+    console.warn('Could not get rescuer geolocation', err);
+    statusEl.innerText += ' (rescuer location unavailable)';
+  }, { enableHighAccuracy: true });
+} else {
+  statusEl.innerText += ' (geolocation not supported)';
+}
+
+  </script>
+</body>
+</html>
