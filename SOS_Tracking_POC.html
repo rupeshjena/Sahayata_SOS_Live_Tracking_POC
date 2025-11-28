@@ -1,42 +1,36 @@
 <!doctype html>
 <html>
 <head>
-  <meta charset="utf-8"/>
-  <meta name="viewport" content="width=device-width,initial-scale=1"/>
-  <title>SOS POC — rescuer-centered live navigation</title>
-  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>SOS POC — rescuer-centered live navigation (Google Maps)</title>
   <style>
-    html,body,#map{ height:100%; margin:0; padding:0; font-family: Arial, Helvetica, sans-serif; }
-    #controls{
-      position:absolute; left:8px; top:8px; z-index:1200;
-      background: rgba(255,255,255,0.95); padding:10px; border-radius:8px;
-      box-shadow:0 2px 8px rgba(0,0,0,0.12);
+    html,body,#map { height:100%; margin:0; padding:0; }
+    /* small top-left status pill (optional, remove if you want zero UI) */
+    #status {
+      position: absolute;
+      left: 8px;
+      top: 8px;
+      z-index: 1200;
+      background: rgba(255,255,255,0.95);
+      padding: 8px 10px;
+      border-radius: 8px;
+      font-family: Arial, Helvetica, sans-serif;
+      font-weight: 600;
+      box-shadow: 0 2px 6px rgba(0,0,0,0.15);
+      display: none; /* hidden by default (remove 'display:none' to show) */
     }
-    .btn{ background:#1a73e8; color:#fff; padding:8px 10px; border:none; border-radius:6px; cursor:pointer; font-weight:600; }
-    .btn.ghost{ background: rgba(0,0,0,0.6); }
-    #dbg{ position:absolute; right:8px; top:8px; z-index:1200; background:rgba(255,255,255,0.95); padding:8px; border-radius:8px; font-family:monospace; font-size:12px; max-width:320px; max-height:220px; overflow:auto; }
-    .rescuer-div-icon{ display:flex; align-items:center; justify-content:center; width:36px; height:36px; border-radius:50%; background: rgba(0,123,255,0.95); color:white; font-size:18px; box-shadow:0 1px 3px rgba(0,0,0,0.4); border:2px solid white; }
   </style>
 </head>
 <body>
-  <div id="controls" style="display:none;">
-    <div style="font-weight:700;margin-bottom:6px">SOS Live — Rescuer-centered Nav</div>
-    <div style="display:flex; gap:6px;">
-      <button id="centerMe" class="btn">Center on Me</button>
-      <button id="openMaps" class="btn ghost">Open in Google Maps</button>
-    </div>
-    <div style="margin-top:8px; font-size:13px; color:#333;">
-      <div id="status">Initializing…</div>
-    </div>
-  </div>
-
-  <div id="dbg" style="display:none;">debug</div>
+  <div id="status">Initializing…</div>
   <div id="map"></div>
 
-  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <!-- Replace the key below with your Google Maps JS API key -->
+  <script src="https://maps.googleapis.com/maps/api/js?key=AIzaSyDF1fsFZ5wOS2Y-PCs5U7K7vIeAbrw6ARE&libraries=places"></script>
   <script>
-/* ================= CONFIG ================= */
-const SIMULATION_INTERVAL_MS = 10000; // victim move interval (ms)
+/* ========== CONFIG ========== */
+const SIMULATION_INTERVAL_MS = 10000;   // victim move interval during demo
 const SIM_POINTS = [
   { name:'Rasulgarh', lat:20.295550, lng:85.857514 },
   { name:'Vani Vihar', lat:20.302518, lng:85.840945 },
@@ -47,38 +41,19 @@ const SIM_POINTS = [
   { name:'Fire Station', lat:20.279040, lng:85.799265 },
   { name:'Baramunda', lat:20.277640, lng:85.794852 }
 ];
-const DEST_MOVE_THRESHOLD_M = 4;   // threshold to recalc route when victim moves
-const MIN_ROUTE_INTERVAL_MS = 2500; // throttle route calls
+const DEST_MOVE_THRESHOLD_M = 4;   // when victim moves this many meters, recalc route
+const MIN_ROUTE_INTERVAL_MS = 2500; // throttle route requests
 const GPS_INTERPOLATION_MS = 800;   // smoothing of rescuer marker between GPS fixes
-/* ========================================= */
+/* ============================== */
 
-const statusEl = document.getElementById('status');
-const dbgEl = document.getElementById('dbg');
-const centerBtn = document.getElementById('centerMe');
-const openMapsBtn = document.getElementById('openMaps');
-
-function dbg(msg){ const t=new Date().toLocaleTimeString(); dbgEl.innerText = `${t} — ${msg}\n` + dbgEl.innerText; console.log(msg); }
-function setStatus(msg){ statusEl.innerText = msg; dbg('STATUS: ' + msg); }
-
-/* Initialize Leaflet */
-const map = L.map('map', { zoomControl:true }).setView([20.29555,85.857514], 15);
-L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom:19 }).addTo(map);
-
-/* State */
-let victimMarker = null;
-let rescuerMarker = null;
-let routeLine = null;
-let simIndex = 0;
-let lastVictim = null;     // {lat,lng,ts,name}
-let rescuerPos = null;     // {lat,lng}
-let simTimer = null;
-let watchId = null;
+let map, directionsService, directionsRenderer;
+let rescuerMarker = null, victimMarker = null;
+let rescuerPos = null, lastVictim = null;
+let simIndex = 0, simTimer = null;
 let lastRouteTime = 0;
+const statusEl = document.getElementById('status');
 
-/* Rescuer icon (emoji bike) */
-const rescuerIcon = L.divIcon({ html:`<div class="rescuer-div-icon">🏍️</div>`, className:'', iconSize:[36,36], iconAnchor:[18,18] });
-
-/* Haversine distance in meters */
+/* Small helper: haversine distance in meters */
 function distanceMeters(a,b){
   if(!a||!b) return Infinity;
   const R = 6371000, toRad = v => v * Math.PI / 180;
@@ -90,204 +65,216 @@ function distanceMeters(a,b){
   return R * c;
 }
 
+/* Initialize Google Map and Directions */
+function initMap() {
+  map = new google.maps.Map(document.getElementById('map'), {
+    center: { lat: SIM_POINTS[0].lat, lng: SIM_POINTS[0].lng },
+    zoom: 15,
+    gestureHandling: 'greedy', // allow user gestures
+    tilt: 0,
+    mapTypeControl: false,
+    streetViewControl: false,
+    fullscreenControl: false
+  });
+
+  directionsService = new google.maps.DirectionsService();
+  directionsRenderer = new google.maps.DirectionsRenderer({
+    map: map,
+    suppressMarkers: true,
+    preserveViewport: true // IMPORTANT: do not auto-fit map to route; we keep rescuer centered
+  });
+
+  // place initial victim marker (simulation)
+  const p = SIM_POINTS[0];
+  placeVictim(p);
+
+  // start victim simulation loop (replace this with your API polling when ready)
+  startSimulation();
+
+  // start rescuer geolocation
+  startRescuerGeolocation();
+}
+
 /* Place or update victim marker */
 function placeVictim(p){
-  if(!victimMarker) victimMarker = L.marker([p.lat,p.lng], { title:'Victim' }).addTo(map);
-  else victimMarker.setLatLng([p.lat,p.lng]);
-  victimMarker.bindPopup(`<b>Victim</b><br>${p.name||''}`).openPopup();
-  lastVictim = { lat:p.lat, lng:p.lng, ts:p.ts||Date.now(), name:p.name||'' };
-  setStatus(`Victim: ${lastVictim.name} (${lastVictim.lat.toFixed(5)}, ${lastVictim.lng.toFixed(5)})`);
+  const pos = { lat: p.lat, lng: p.lng };
+  if(!victimMarker){
+    victimMarker = new google.maps.Marker({
+      position: pos,
+      map: map,
+      title: 'Victim',
+      icon: {
+        path: google.maps.SymbolPath.CIRCLE,
+        scale: 7,
+        fillColor: '#d9534f',
+        fillOpacity: 1,
+        strokeWeight: 2,
+        strokeColor: '#fff'
+      }
+    });
+  } else {
+    victimMarker.setPosition(pos);
+  }
+  lastVictim = { lat: p.lat, lng: p.lng, name: p.name || '' };
+  // optional: update statusEl if you want visible UI
+  // statusEl.innerText = `Victim: ${lastVictim.name} (${lastVictim.lat.toFixed(5)}, ${lastVictim.lng.toFixed(5)})`;
 }
 
-/* Place or update rescuer marker */
+/* Place or update rescuer marker (bike icon via SVG path) */
 function placeRescuer(p){
-  if(!rescuerMarker) rescuerMarker = L.marker([p.lat,p.lng], { icon: rescuerIcon, title:'You (rescuer)' }).addTo(map);
-  else rescuerMarker.setLatLng([p.lat,p.lng]);
-}
-
-/* Smoothly animate marker from current -> to over duration (ms) */
-function animateMarkerTo(marker, fromLatLng, toLatLng, durationMs){
-  if(!marker) { placeRescuer(toLatLng); return; }
-  const steps = Math.max(6, Math.floor(durationMs / 50));
-  let i = 0;
-  const lat1 = fromLatLng.lat, lon1 = fromLatLng.lng;
-  const lat2 = toLatLng.lat, lon2 = toLatLng.lng;
-  const handle = setInterval(()=>{
-    i++;
-    const t = i/steps;
-    const lat = lat1 + (lat2 - lat1) * t;
-    const lon = lon1 + (lon2 - lon1) * t;
-    marker.setLatLng([lat, lon]);
-    if(i >= steps) clearInterval(handle);
-  }, Math.max(30, Math.floor(durationMs / steps)));
-}
-
-/* Request route from OSRM and draw it; remove old polyline and DO NOT fit bounds */
-async function drawRoute(origin, dest){
-  try{
-    if(!origin || !dest) return;
-    const now = Date.now();
-    if(now - lastRouteTime < MIN_ROUTE_INTERVAL_MS){ dbg('Route call throttled'); return; }
-    lastRouteTime = now;
-
-    const url = `https://router.project-osrm.org/route/v1/driving/${origin.lng},${origin.lat};${dest.lng},${dest.lat}?overview=full&geometries=geojson`;
-    dbg('OSRM -> ' + url);
-    const res = await fetch(url);
-    if(!res.ok){ dbg('OSRM failed ' + res.status); return; }
-    const j = await res.json();
-    if(!j.routes || !j.routes.length){ dbg('No route returned'); return; }
-
-    const coords = j.routes[0].geometry.coordinates; // [ [lon,lat], ... ]
-    const latlngs = coords.map(c => [c[1], c[0]]);
-
-    // Remove old route
-    if(routeLine){
-      try{ map.removeLayer(routeLine); } catch(e){ dbg('removeLayer err: ' + e); }
-      routeLine = null;
-    }
-
-    // Add new clean route polyline (DO NOT fit bounds)
-    routeLine = L.polyline(latlngs, { weight:5, color:'#1a73e8' }).addTo(map);
-
-    dbg('Route drawn (polyline replaced).');
-    // IMPORTANT: We DO NOT call fitBounds here — the map stays centered on rescuer.
-    // If you want slight camera lead, you could pan a few pixels ahead programmatically.
-  }catch(e){
-    dbg('drawRoute error: ' + e);
+  const pos = { lat: p.lat, lng: p.lng };
+  if(!rescuerMarker){
+    // simple bike/person marker — using a small SVG so it rotates nicely if you add rotation later
+    const svg = encodeURIComponent(`
+      <svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 24 24">
+        <circle cx="12" cy="12" r="11" fill="#0b63d6"/>
+        <text x="50%" y="53%" font-size="14" text-anchor="middle" fill="white" font-family="sans-serif">🏍️</text>
+      </svg>`);
+    rescuerMarker = new google.maps.Marker({
+      position: pos,
+      map: map,
+      title: 'You (rescuer)',
+      icon: {
+        url: `data:image/svg+xml;charset=utf-8,${svg}`,
+        scaledSize: new google.maps.Size(36,36),
+        anchor: new google.maps.Point(18,18)
+      }
+    });
+  } else {
+    rescuerMarker.setPosition(pos);
   }
 }
 
-/* Simulation: show first victim immediately, then loop */
-(function initSimulation(){
-  const p = SIM_POINTS[0];
-  placeVictim({ lat:p.lat, lng:p.lng, name:p.name });
-  map.setView([p.lat, p.lng], 15);
+/* Smoothly interpolate marker from current -> target over durationMs */
+function animateMarkerTo(marker, targetLatLng, durationMs = GPS_INTERPOLATION_MS) {
+  if(!marker) { placeRescuer(targetLatLng); return; }
+  const start = marker.getPosition();
+  const startLat = start.lat(), startLng = start.lng();
+  const endLat = targetLatLng.lat, endLng = targetLatLng.lng;
+  const steps = Math.max(6, Math.floor(durationMs / 50));
+  let i = 0;
+  const tick = () => {
+    i++;
+    const t = i / steps;
+    const lat = startLat + (endLat - startLat) * t;
+    const lng = startLng + (endLng - startLng) * t;
+    marker.setPosition({ lat, lng });
+    if(i < steps) {
+      requestAnimationFrame(tick);
+    }
+  };
+  requestAnimationFrame(tick);
+}
+
+/* Draw route using Google Directions API; we set preserveViewport=true so renderer won't change camera */
+function drawRoute(origin, dest) {
+  if(!origin || !dest) return;
+  const now = Date.now();
+  if(now - lastRouteTime < MIN_ROUTE_INTERVAL_MS) return;
+  lastRouteTime = now;
+
+  const request = {
+    origin: { lat: origin.lat, lng: origin.lng },
+    destination: { lat: dest.lat, lng: dest.lng },
+    travelMode: google.maps.TravelMode.DRIVING,
+    drivingOptions: { departureTime: new Date() } // use current time for ETA
+  };
+
+  directionsService.route(request, (result, status) => {
+    if(status === google.maps.DirectionsStatus.OK && result) {
+      directionsRenderer.setDirections(result);
+      // we suppressed default markers; show our markers remain
+    } else {
+      // fallback: you may handle errors or fallback to polyline from route geometry if needed
+      console.warn('Directions request failed: ', status);
+    }
+  });
+}
+
+/* Simulation loop (victim moves through SIM_POINTS). Replace this with API polling later. */
+function startSimulation() {
   simIndex = 1;
-
-  // start repeating updates
-  simTimer = setInterval(async ()=>{
-    const prev = lastVictim ? { lat:lastVictim.lat, lng:lastVictim.lng } : null;
+  placeVictim(SIM_POINTS[0]);
+  simTimer = setInterval(async () => {
+    const prev = lastVictim ? { lat: lastVictim.lat, lng: lastVictim.lng } : null;
     const p = SIM_POINTS[simIndex];
-    const newVictim = { lat:p.lat, lng:p.lng, ts:Date.now(), name:p.name };
-
-    // Update victim marker & store previous -> new to compute movement
+    const newVictim = { lat: p.lat, lng: p.lng, name: p.name };
     placeVictim(newVictim);
 
-    // If rescuer known, recalc route each victim move beyond threshold
     if(rescuerPos){
       const moved = prev ? distanceMeters(prev, newVictim) : Infinity;
-      dbg('Victim moved (m): ' + moved.toFixed(1));
       if(moved >= DEST_MOVE_THRESHOLD_M){
-        await drawRoute(rescuerPos, newVictim);
-      } else {
-        dbg('Victim movement < threshold, no route recalc');
+        drawRoute(rescuerPos, newVictim);
       }
-    } else {
-      // do not change camera; keep map as-is until rescuer appears
-      dbg('No rescuer yet; victim moved');
     }
 
     simIndex = (simIndex + 1) % SIM_POINTS.length;
   }, SIMULATION_INTERVAL_MS);
-})();
-
-/* Geolocation: request once then watch; interpolate marker between GPS fixes; always pan to rescuer */
-async function startRescuerGeolocation(){
-  if(!('geolocation' in navigator)){ setStatus('Geolocation unsupported by browser'); dbg('No geolocation'); return; }
-
-  // Try permission check (best-effort)
-  try{
-    if(navigator.permissions && navigator.permissions.query){
-      const p = await navigator.permissions.query({ name:'geolocation' });
-      dbg('Permission state: ' + p.state);
-      p.onchange = ()=> dbg('Permission changed: ' + p.state);
-      if(p.state === 'denied') setStatus('Location blocked — allow in site settings');
-    }
-  }catch(e){ dbg('Permissions API not supported: ' + e); }
-
-  // request one shot (may prompt)
-  navigator.geolocation.getCurrentPosition(pos=>{
-    const newPos = { lat: pos.coords.latitude, lng: pos.coords.longitude };
-    dbg('Initial GPS fix: ' + newPos.lat.toFixed(6) + ',' + newPos.lng.toFixed(6));
-    // place rescuer marker
-    placeRescuer(newPos);
-    rescuerPos = newPos;
-    setStatus('Rescuer location obtained. Navigation origin set.');
-    // draw route immediately if victim available
-    if(lastVictim) drawRoute(rescuerPos, lastVictim);
-    // center map on rescuer initially
-    map.setView([rescuerPos.lat, rescuerPos.lng], map.getZoom());
-  }, err=>{
-    dbg('getCurrentPosition error: ' + JSON.stringify(err));
-    if(err && err.code === 1) setStatus('Permission denied. Allow location and reload.');
-    else if(err && err.code === 2) setStatus('Position unavailable (GPS off?)');
-    else if(err && err.code === 3) setStatus('Timeout getting location — starting watch.');
-    else setStatus('Geolocation error (see debug).');
-  }, { enableHighAccuracy:true, timeout:8000, maximumAge:0 });
-
-  // continuous watch - on each fix interpolate marker and recalc route
-  watchId = navigator.geolocation.watchPosition(pos=>{
-    const newPos = { lat: pos.coords.latitude, lng: pos.coords.longitude };
-    dbg('GPS update: ' + newPos.lat.toFixed(6) + ',' + newPos.lng.toFixed(6));
-    if(!rescuerPos){
-      // first time
-      rescuerPos = newPos;
-      placeRescuer(newPos);
-    } else {
-      // smooth movement from existing marker position -> newPos
-      const fromLatLng = rescuerMarker ? { lat: rescuerMarker.getLatLng().lat, lng: rescuerMarker.getLatLng().lng } : rescuerPos;
-      animateMarkerTo(rescuerMarker, fromLatLng, newPos, GPS_INTERPOLATION_MS);
-      rescuerPos = newPos;
-    }
-
-    // ALWAYS pan to rescuer so bike stays centered
-    map.panTo([newPos.lat, newPos.lng], { animate: true, duration: 0.35 });
-
-    // Recalculate route to latest victim coordinates (if available)
-    if(lastVictim){
-      // throttle route requests
-      const now = Date.now();
-      if(now - lastRouteTime >= MIN_ROUTE_INTERVAL_MS){
-        lastRouteTime = now;
-        drawRoute(rescuerPos, lastVictim);
-      } else dbg('Route recalculation throttled on GPS update');
-    }
-  }, err=>{
-    dbg('watchPosition error: ' + JSON.stringify(err));
-  }, { enableHighAccuracy:true, maximumAge:2000, timeout:10000 });
 }
 
-/* UI actions */
-centerBtn.addEventListener('click', ()=>{
-  if(!rescuerPos) return alert('Rescuer location not available yet (allow location).');
-  map.setView([rescuerPos.lat, rescuerPos.lng], 16);
-});
+/* Start geolocation for rescuer: get one shot + watch, interpolate marker, always pan to rescuer */
+function startRescuerGeolocation(){
+  if(!('geolocation' in navigator)) {
+    console.warn('Geolocation unsupported');
+    return;
+  }
 
-openMapsBtn.addEventListener('click', ()=>{
-  if(!lastVictim) return alert('Victim location not available yet.');
-  const url = `https://www.google.com/maps/dir/?api=1&destination=${lastVictim.lat},${lastVictim.lng}&travelmode=driving`;
-  window.location.href = url;
-});
+  // get initial position
+  navigator.geolocation.getCurrentPosition(pos => {
+    const p = { lat: pos.coords.latitude, lng: pos.coords.longitude };
+    rescuerPos = p;
+    placeRescuer(p);
+    // initially draw route if victim exists
+    if(lastVictim) drawRoute(rescuerPos, lastVictim);
+    // center on rescuer
+    map.setCenter({ lat: rescuerPos.lat, lng: rescuerPos.lng });
+  }, err => {
+    console.warn('getCurrentPosition error', err);
+  }, { enableHighAccuracy: true, timeout:8000 });
 
-/* Start rescuer geolocation (will prompt on HTTPS) */
-startRescuerGeolocation();
+  // watch position
+  navigator.geolocation.watchPosition(pos => {
+    const newPos = { lat: pos.coords.latitude, lng: pos.coords.longitude };
+    // smooth visual move
+    if(rescuerMarker){
+      animateMarkerTo(rescuerMarker, newPos, GPS_INTERPOLATION_MS);
+    } else {
+      placeRescuer(newPos);
+    }
+    rescuerPos = newPos;
 
-/* Security hint */
-(function checkOrigin(){
-  const isLocal = ['localhost','127.0.0.1'].includes(location.hostname);
-  if(!(location.protocol === 'https:' || isLocal)){
-    dbg('WARNING: Page not served over HTTPS. Geolocation may be blocked by browser. Serve via GitHub Pages or use http://localhost for testing.');
-    setStatus('Serve via HTTPS (GitHub Pages) or use http://localhost to enable geolocation on mobile.');
-  } else dbg('Secure origin OK.');
-})();
+    // ALWAYS pan/center map to rescuer -- keeps rescuer focal
+    map.panTo({ lat: newPos.lat, lng: newPos.lng }, { duration: 0.3 });
 
-/* NOTES:
- - To switch victim simulation to real API: replace the simulation timer with a polling call to your API endpoint
-   that returns JSON { lat:number, lng:number, ts?:string } and call placeVictim() with returned coords.
- - OSRM is used here for routing (public demo server). For production use consider Google Directions API (requires key + billing).
-*/
+    // Recalculate route to latest victim when needed (throttled inside drawRoute)
+    if(lastVictim) drawRoute(rescuerPos, lastVictim);
+  }, err => {
+    console.warn('watchPosition error', err);
+  }, { enableHighAccuracy: true, maximumAge: 2000, timeout: 10000 });
+}
+
+/* --- Start everything after API loads --- */
+function start() {
+  initMap();
+}
+
+/* Kick off */
+start();
+
+/* ================= Switching to real API (notes) =================
+When your SOAP/REST API is ready, replace startSimulation() and the simTimer with a polling function:
+- Poll your backend endpoint (CORS must be allowed) that returns JSON { lat:number, lng:number, ts?:string }.
+- On each response call placeVictim(resp) and drawRoute(rescuerPos, resp).
+Example (pseudo):
+  async function pollVictim(){
+    const r = await fetch('https://yourserver/api/sos/latest?id=xxxx');
+    const j = await r.json(); // {lat,lng}
+    placeVictim(j);
+    if(rescuerPos) drawRoute(rescuerPos, j);
+  }
+Set interval as required (3s for your system).
+================================================================== */
+
   </script>
 </body>
 </html>
-
-
