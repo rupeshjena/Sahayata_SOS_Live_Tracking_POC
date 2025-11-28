@@ -1,9 +1,9 @@
 <!doctype html>
 <html>
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>SOS POC — live rescuer tracking to moving victim</title>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>SOS POC — rescuer-centered live navigation</title>
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
   <style>
     html,body,#map{ height:100%; margin:0; padding:0; font-family: Arial, Helvetica, sans-serif; }
@@ -20,7 +20,7 @@
 </head>
 <body>
   <div id="controls">
-    <div style="font-weight:700;margin-bottom:6px">SOS Live Demo</div>
+    <div style="font-weight:700;margin-bottom:6px">SOS Live — Rescuer-centered Nav</div>
     <div style="display:flex; gap:6px;">
       <button id="centerMe" class="btn">Center on Me</button>
       <button id="openMaps" class="btn ghost">Open in Google Maps</button>
@@ -36,7 +36,7 @@
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script>
 /* ================= CONFIG ================= */
-const SIMULATION_INTERVAL_MS = 10000; // victim move interval (ms). Change to 3000/5000 when using real API if desired.
+const SIMULATION_INTERVAL_MS = 10000; // victim move interval (ms)
 const SIM_POINTS = [
   { name:'Rasulgarh', lat:20.295550, lng:85.857514 },
   { name:'Vani Vihar', lat:20.302518, lng:85.840945 },
@@ -47,9 +47,9 @@ const SIM_POINTS = [
   { name:'Fire Station', lat:20.279040, lng:85.799265 },
   { name:'Baramunda', lat:20.277640, lng:85.794852 }
 ];
-const DEST_MOVE_THRESHOLD_M = 4;   // small threshold to force route recalc when victim moves
+const DEST_MOVE_THRESHOLD_M = 4;   // threshold to recalc route when victim moves
 const MIN_ROUTE_INTERVAL_MS = 2500; // throttle route calls
-const GPS_INTERPOLATION_MS = 800;   // marker smoothing for rescuer between GPS fixes
+const GPS_INTERPOLATION_MS = 800;   // smoothing of rescuer marker between GPS fixes
 /* ========================================= */
 
 const statusEl = document.getElementById('status');
@@ -61,7 +61,7 @@ function dbg(msg){ const t=new Date().toLocaleTimeString(); dbgEl.innerText = `$
 function setStatus(msg){ statusEl.innerText = msg; dbg('STATUS: ' + msg); }
 
 /* Initialize Leaflet */
-const map = L.map('map', { zoomControl:true }).setView([20.29555,85.857514], 13);
+const map = L.map('map', { zoomControl:true }).setView([20.29555,85.857514], 15);
 L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom:19 }).addTo(map);
 
 /* State */
@@ -122,30 +122,36 @@ function animateMarkerTo(marker, fromLatLng, toLatLng, durationMs){
   }, Math.max(30, Math.floor(durationMs / steps)));
 }
 
-/* Request route from OSRM (public demo router) and draw it; throttled */
+/* Request route from OSRM and draw it; remove old polyline and DO NOT fit bounds */
 async function drawRoute(origin, dest){
   try{
     if(!origin || !dest) return;
     const now = Date.now();
     if(now - lastRouteTime < MIN_ROUTE_INTERVAL_MS){ dbg('Route call throttled'); return; }
     lastRouteTime = now;
+
     const url = `https://router.project-osrm.org/route/v1/driving/${origin.lng},${origin.lat};${dest.lng},${dest.lat}?overview=full&geometries=geojson`;
     dbg('OSRM -> ' + url);
     const res = await fetch(url);
     if(!res.ok){ dbg('OSRM failed ' + res.status); return; }
     const j = await res.json();
     if(!j.routes || !j.routes.length){ dbg('No route returned'); return; }
+
     const coords = j.routes[0].geometry.coordinates; // [ [lon,lat], ... ]
     const latlngs = coords.map(c => [c[1], c[0]]);
-    if(routeLine) routeLine.setLatLngs(latlngs);
-    else routeLine = L.polyline(latlngs, { weight:5, color:'#1a73e8' }).addTo(map);
 
-    // Keep map focused to show both
-    const bounds = L.latLngBounds(latlngs);
-    if(victimMarker) bounds.extend(victimMarker.getLatLng());
-    if(rescuerMarker) bounds.extend(rescuerMarker.getLatLng());
-    map.fitBounds(bounds.pad(0.25));
-    dbg('Route drawn (OSRM).');
+    // Remove old route
+    if(routeLine){
+      try{ map.removeLayer(routeLine); } catch(e){ dbg('removeLayer err: ' + e); }
+      routeLine = null;
+    }
+
+    // Add new clean route polyline (DO NOT fit bounds)
+    routeLine = L.polyline(latlngs, { weight:5, color:'#1a73e8' }).addTo(map);
+
+    dbg('Route drawn (polyline replaced).');
+    // IMPORTANT: We DO NOT call fitBounds here — the map stays centered on rescuer.
+    // If you want slight camera lead, you could pan a few pixels ahead programmatically.
   }catch(e){
     dbg('drawRoute error: ' + e);
   }
@@ -155,7 +161,7 @@ async function drawRoute(origin, dest){
 (function initSimulation(){
   const p = SIM_POINTS[0];
   placeVictim({ lat:p.lat, lng:p.lng, name:p.name });
-  map.setView([p.lat, p.lng], 14);
+  map.setView([p.lat, p.lng], 15);
   simIndex = 1;
 
   // start repeating updates
@@ -177,14 +183,15 @@ async function drawRoute(origin, dest){
         dbg('Victim movement < threshold, no route recalc');
       }
     } else {
-      map.panTo([newVictim.lat,newVictim.lng]);
+      // do not change camera; keep map as-is until rescuer appears
+      dbg('No rescuer yet; victim moved');
     }
 
     simIndex = (simIndex + 1) % SIM_POINTS.length;
   }, SIMULATION_INTERVAL_MS);
 })();
 
-/* Geolocation: request once then watch; interpolate marker between GPS fixes */
+/* Geolocation: request once then watch; interpolate marker between GPS fixes; always pan to rescuer */
 async function startRescuerGeolocation(){
   if(!('geolocation' in navigator)){ setStatus('Geolocation unsupported by browser'); dbg('No geolocation'); return; }
 
@@ -208,6 +215,8 @@ async function startRescuerGeolocation(){
     setStatus('Rescuer location obtained. Navigation origin set.');
     // draw route immediately if victim available
     if(lastVictim) drawRoute(rescuerPos, lastVictim);
+    // center map on rescuer initially
+    map.setView([rescuerPos.lat, rescuerPos.lng], map.getZoom());
   }, err=>{
     dbg('getCurrentPosition error: ' + JSON.stringify(err));
     if(err && err.code === 1) setStatus('Permission denied. Allow location and reload.');
@@ -231,9 +240,12 @@ async function startRescuerGeolocation(){
       rescuerPos = newPos;
     }
 
+    // ALWAYS pan to rescuer so bike stays centered
+    map.panTo([newPos.lat, newPos.lng], { animate: true, duration: 0.35 });
+
     // Recalculate route to latest victim coordinates (if available)
     if(lastVictim){
-      // throttle with MIN_ROUTE_INTERVAL_MS
+      // throttle route requests
       const now = Date.now();
       if(now - lastRouteTime >= MIN_ROUTE_INTERVAL_MS){
         lastRouteTime = now;
@@ -253,7 +265,6 @@ centerBtn.addEventListener('click', ()=>{
 
 openMapsBtn.addEventListener('click', ()=>{
   if(!lastVictim) return alert('Victim location not available yet.');
-  // This opens Google Maps app on mobile (device will be origin)
   const url = `https://www.google.com/maps/dir/?api=1&destination=${lastVictim.lat},${lastVictim.lng}&travelmode=driving`;
   window.location.href = url;
 });
@@ -273,7 +284,7 @@ startRescuerGeolocation();
 /* NOTES:
  - To switch victim simulation to real API: replace the simulation timer with a polling call to your API endpoint
    that returns JSON { lat:number, lng:number, ts?:string } and call placeVictim() with returned coords.
- - OSRM is used for routing here (public demo server). For production use consider Google Directions API (requires key + billing).
+ - OSRM is used here for routing (public demo server). For production use consider Google Directions API (requires key + billing).
 */
   </script>
 </body>
