@@ -101,13 +101,13 @@ function initMap() {
 
   if (USE_SERVER) {
     // 🔴 REAL SERVER MODE
-    statusEl.textContent = "Connecting to SOS server…";
+    statusEl.textContent = "Connecting to server…";
     startServerPolling();
   } else {
     // 🟢 DUMMY SIMULATION MODE (exact behavior as earlier)
     const p = SIM_POINTS[0];
     placeVictim(p);
-    statusEl.textContent = "Demo mode (dummy path)";
+    statusEl.textContent = "Demo mode";
     startSimulation();
   }
 
@@ -333,7 +333,7 @@ function startServerPolling() {
 
     } catch (e) {
       console.error('Error fetching victim from server:', e);
-      statusEl.textContent = 'Error contacting SOS server (likely CORS).';
+      statusEl.textContent = 'Error contacting SOS server.';
     }
   };
 
@@ -384,5 +384,6 @@ start();
   </script>
 </body>
 </html>
+
 
 
