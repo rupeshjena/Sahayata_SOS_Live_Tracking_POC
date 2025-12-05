@@ -47,7 +47,7 @@ const MIN_ROUTE_INTERVAL_MS = 2500; // throttle route requests
 const GPS_INTERPOLATION_MS = 800;   // smoothing of rescuer marker between GPS fixes
 
 /* Toggle between dummy simulation and real server polling */
-const USE_SERVER = false; // false = dummy SIM_POINTS, true = call SOAP API
+const USE_SERVER = true; // false = dummy SIM_POINTS, true = call SOAP API
 
 /* === Query Params for victim details === */
 const urlParams = new URLSearchParams(window.location.search);
@@ -384,4 +384,5 @@ start();
   </script>
 </body>
 </html>
+
 
