@@ -31,26 +31,36 @@
   <script>
 /* ========== CONFIG ========== */
 const SIMULATION_INTERVAL_MS = 10000;   // victim move interval during demo
+const POLL_INTERVAL_MS       = 10000;   // victim fetch interval from server (30 sec)
 const SIM_POINTS = [
-  { name:'Rasulgarh', lat:20.295550, lng:85.857514 },
-  { name:'Vani Vihar', lat:20.302518, lng:85.840945 },
+  { name:'Rasulgarh',     lat:20.295550, lng:85.857514 },
+  { name:'Vani Vihar',    lat:20.302518, lng:85.840945 },
   { name:'Acharya Vihar', lat:20.303630, lng:85.800150 },
-  { name:'Jaydev Vihar', lat:20.299727, lng:85.817264 },
-  { name:'Nayapalli', lat:20.289898, lng:85.810219 },
-  { name:'CRP', lat:20.286389, lng:85.807222 },
-  { name:'Fire Station', lat:20.279040, lng:85.799265 },
-  { name:'Baramunda', lat:20.277640, lng:85.794852 }
+  { name:'Jaydev Vihar',  lat:20.299727, lng:85.817264 },
+  { name:'Nayapalli',     lat:20.289898, lng:85.810219 },
+  { name:'CRP',           lat:20.286389, lng:85.807222 },
+  { name:'Fire Station',  lat:20.279040, lng:85.799265 },
+  { name:'Baramunda',     lat:20.277640, lng:85.794852 }
 ];
-const DEST_MOVE_THRESHOLD_M = 4;   // when victim moves this many meters, recalc route
+const DEST_MOVE_THRESHOLD_M = 4;    // when victim moves this many meters, recalc route
 const MIN_ROUTE_INTERVAL_MS = 2500; // throttle route requests
 const GPS_INTERPOLATION_MS = 800;   // smoothing of rescuer marker between GPS fixes
+
+/* === Query Params for victim details === */
+const urlParams = new URLSearchParams(window.location.search);
+const VICTIM_MOBILE = urlParams.get("mobile") || "8093831436";
+const VICTIM_NAME   = urlParams.get("name")   || "Rupesh";
+
+// Mobile number for SOS API (now driven by query param)
+const SOS_MOBILE_NO = VICTIM_MOBILE;
 /* ============================== */
 
 let map, directionsService, directionsRenderer;
 let rescuerMarker = null, victimMarker = null;
 let rescuerPos = null, lastVictim = null;
-let simIndex = 0, simTimer = null;
+let simIndex = 0, simTimer = null, pollTimer = null;
 let lastRouteTime = 0;
+let victimInfoWindow = null;
 const statusEl = document.getElementById('status');
 
 /* Small helper: haversine distance in meters */
@@ -88,14 +98,25 @@ function initMap() {
   const p = SIM_POINTS[0];
   placeVictim(p);
 
-  // start victim simulation loop (replace this with your API polling when ready)
-  startSimulation();
+  statusEl.style.display = "block";
+  statusEl.textContent = "Demo mode (dummy path)";
+
+  // ================== VICTIM SOURCE SELECTION ==================
+  // For DEMO with dummy coordinates (current behavior):
+  //startSimulation();
+
+  // For REAL LIVE DATA from server (30s polling):
+  //   1) Comment OUT the line above:  // startSimulation();
+  //   2) Uncomment the line below:    startServerPolling();
+  //
+  startServerPolling();
+  // =============================================================
 
   // start rescuer geolocation
   startRescuerGeolocation();
 }
 
-/* Place or update victim marker */
+/* Place or update victim marker (with InfoWindow showing victim name) */
 function placeVictim(p){
   const pos = { lat: p.lat, lng: p.lng };
 
@@ -112,11 +133,36 @@ function placeVictim(p){
       title: "Victim (SOS)",
       icon: victimIcon
     });
+
+    // Create and open info window with victim name & mobile
+    victimInfoWindow = new google.maps.InfoWindow({
+      content: `<div style="font-weight:600;font-size:14px;line-height:1.4">
+                  🚨 SOS Victim<br>
+                  Name: ${VICTIM_NAME}<br>
+                  Mobile: ${VICTIM_MOBILE}
+                </div>`
+    });
+    victimInfoWindow.open(map, victimMarker);
+
+    // Click to reopen if closed
+    victimMarker.addListener("click", () => {
+      victimInfoWindow.open(map, victimMarker);
+    });
+
   } else {
     victimMarker.setPosition(pos);
+    if (victimInfoWindow) {
+      victimInfoWindow.setContent(
+        `<div style="font-weight:600;font-size:14px;line-height:1.4">
+           🚨 SOS Victim<br>
+           Name: ${VICTIM_NAME}<br>
+           Mobile: ${VICTIM_MOBILE}
+         </div>`
+      );
+    }
   }
 
-  lastVictim = { lat: p.lat, lng: p.lng, name: p.name || '' };
+  lastVictim = { lat: p.lat, lng: p.lng, name: VICTIM_NAME };
 }
 
 /* Place or update rescuer marker (bike icon via SVG path) */
@@ -190,11 +236,11 @@ function drawRoute(origin, dest) {
   });
 }
 
-/* Simulation loop (victim moves through SIM_POINTS). Replace this with API polling later. */
+/* Simulation loop (victim moves through SIM_POINTS). */
 function startSimulation() {
   simIndex = 1;
   placeVictim(SIM_POINTS[0]);
-  simTimer = setInterval(async () => {
+  simTimer = setInterval(() => {
     const prev = lastVictim ? { lat: lastVictim.lat, lng: lastVictim.lng } : null;
     const p = SIM_POINTS[simIndex];
     const newVictim = { lat: p.lat, lng: p.lng, name: p.name };
@@ -210,6 +256,108 @@ function startSimulation() {
     simIndex = (simIndex + 1) % SIM_POINTS.length;
   }, SIMULATION_INTERVAL_MS);
 }
+
+/* ==================== REAL SERVER INTEGRATION ==================== */
+/* Build SOAP body for GetSOSLocationDetails */
+function buildSoapBody(mobileNo) {
+  return `<?xml version="1.0" encoding="utf-8"?>
+<soap:Envelope xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
+  <soap:Body>
+    <GetSOSLocationDetails xmlns="http://tempuri.org/">
+      <MobileNo>${mobileNo}</MobileNo>
+      <SelfMobile></SelfMobile>
+      <imieno></imieno>
+      <mobiletype></mobiletype>
+      <strToken></strToken>
+      <strIpNo></strIpNo>
+      <strLoginID></strLoginID>
+    </GetSOSLocationDetails>
+  </soap:Body>
+</soap:Envelope>`;
+}
+
+/* Call the SOAP API and return {lat, lng, name} */
+async function fetchVictimFromServer() {
+  const url = 'https://services-op.odisha.gov.in/Mobile_App/CitizenService.asmx';
+  const soapAction = 'http://tempuri.org/GetSOSLocationDetails';
+  const body = buildSoapBody(SOS_MOBILE_NO);
+
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'text/xml; charset=utf-8',
+      'SOAPAction': soapAction
+    },
+    body
+  });
+
+  if (!res.ok) {
+    console.warn('SOS API HTTP error:', res.status, res.statusText);
+    throw new Error('HTTP ' + res.status);
+  }
+
+  const text = await res.text();
+  // console.log('RAW SOAP RESPONSE:', text); // uncomment for debugging
+
+  const parser = new DOMParser();
+  const xml = parser.parseFromString(text, 'text/xml');
+
+  // NOTE: API uses "lattitude" (double t) and "longitude"
+  const latNode = xml.getElementsByTagName('lattitude')[0];
+  const lngNode = xml.getElementsByTagName('longitude')[0];
+
+  if (!latNode || !lngNode) {
+    console.warn('Could not find lattitude/longitude nodes in response');
+    throw new Error('No location data');
+  }
+
+  const lat = parseFloat(latNode.textContent);
+  const lng = parseFloat(lngNode.textContent);
+
+  if (isNaN(lat) || isNaN(lng)) {
+    console.warn('Invalid lat/lng values from server:', latNode.textContent, lngNode.textContent);
+    throw new Error('Invalid coordinates');
+  }
+
+  return { lat, lng, name: VICTIM_NAME || 'SOS Victim' };
+}
+
+/* Poll server every 30 seconds and update victim + route */
+function startServerPolling() {
+  // If simulation accidentally running, stop it
+  if (simTimer) {
+    clearInterval(simTimer);
+    simTimer = null;
+  }
+
+  statusEl.style.display = "block";
+  statusEl.textContent = `Live mode (server) - ${VICTIM_NAME} / ${VICTIM_MOBILE}`;
+
+  const doPoll = async () => {
+    try {
+      const prev = lastVictim ? { lat: lastVictim.lat, lng: lastVictim.lng } : null;
+      const victim = await fetchVictimFromServer();
+
+      // Update victim marker and lastVictim (same as simulation)
+      placeVictim(victim);
+
+      // Recalculate route if rescuer is known
+      if (rescuerPos) {
+        const moved = prev ? distanceMeters(prev, victim) : Infinity;
+        if (moved >= DEST_MOVE_THRESHOLD_M) {
+          drawRoute(rescuerPos, victim);
+        }
+      }
+    } catch (e) {
+      console.error('Error fetching victim from server:', e);
+    }
+  };
+
+  // First call immediately, then every POLL_INTERVAL_MS
+  doPoll();
+  pollTimer = setInterval(doPoll, POLL_INTERVAL_MS);
+}
+/* ================================================================ */
 
 /* Start geolocation for rescuer: get one shot + watch, interpolate marker, always pan to rescuer */
 function startRescuerGeolocation(){
@@ -243,7 +391,7 @@ function startRescuerGeolocation(){
     rescuerPos = newPos;
 
     // ALWAYS pan/center map to rescuer -- keeps rescuer focal
-    map.panTo({ lat: newPos.lat, lng: newPos.lng }, { duration: 0.3 });
+    map.panTo({ lat: newPos.lat, lng: newPos.lng });
 
     // Recalculate route to latest victim when needed (throttled inside drawRoute)
     if(lastVictim) drawRoute(rescuerPos, lastVictim);
@@ -252,31 +400,12 @@ function startRescuerGeolocation(){
   }, { enableHighAccuracy: true, maximumAge: 2000, timeout: 10000 });
 }
 
-/* --- Start everything after API loads --- */
+/* --- Start everything --- */
 function start() {
   initMap();
 }
 
-/* Kick off */
 start();
-
-/* ================= Switching to real API (notes) =================
-When your SOAP/REST API is ready, replace startSimulation() and the simTimer with a polling function:
-- Poll your backend endpoint (CORS must be allowed) that returns JSON { lat:number, lng:number, ts?:string }.
-- On each response call placeVictim(resp) and drawRoute(rescuerPos, resp).
-Example (pseudo):
-  async function pollVictim(){
-    const r = await fetch('https://yourserver/api/sos/latest?id=xxxx');
-    const j = await r.json(); // {lat,lng}
-    placeVictim(j);
-    if(rescuerPos) drawRoute(rescuerPos, j);
-  }
-Set interval as required (3s for your system).
-================================================================== */
-
   </script>
 </body>
 </html>
-
-
-
