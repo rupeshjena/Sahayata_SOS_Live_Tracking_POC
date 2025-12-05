@@ -29,6 +29,7 @@
   <!-- Replace the key below with your Google Maps JS API key -->
   <script src="https://maps.googleapis.com/maps/api/js?key=AIzaSyCxHxFiNlzq9TUjWiemfQpRXla7NODMJV0&libraries=places"></script>
   <script>
+/*CREATED BY RUPESH*/
 /* ========== CONFIG ========== */
 const SIMULATION_INTERVAL_MS = 10000;   // victim move interval during demo
 const POLL_INTERVAL_MS       = 10000;   // victim fetch interval from server (30 sec)
@@ -53,6 +54,11 @@ const USE_SERVER = true; // false = dummy SIM_POINTS, true = call SOAP API
 const urlParams = new URLSearchParams(window.location.search);
 const VICTIM_MOBILE = urlParams.get("mobile") || "8093831436";
 const VICTIM_NAME   = urlParams.get("name")   || "Rupesh";
+
+// Auto-disable server mode if victim mobile is missing
+if (!VICTIM_MOBILE || VICTIM_MOBILE.trim() === "") {
+    USE_SERVER = false;
+}
 
 // Mobile number for SOS API (now driven by query param)
 const SOS_MOBILE_NO = VICTIM_MOBILE;
@@ -381,9 +387,12 @@ function start() {
 }
 
 start();
+
+/*CREATED BY RUPESH*/
   </script>
 </body>
 </html>
+
 
 
 
