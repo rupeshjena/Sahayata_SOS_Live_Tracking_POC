@@ -6,7 +6,7 @@
   <title>SOS POC — rescuer-centered live navigation (Google Maps)</title>
   <style>
     html,body,#map { height:100%; margin:0; padding:0; }
-    /* small top-left status pill (optional, remove if you want zero UI) */
+    /* small top-left status pill (loader / status) */
     #status {
       position: absolute;
       left: 8px;
@@ -18,7 +18,7 @@
       font-family: Arial, Helvetica, sans-serif;
       font-weight: 600;
       box-shadow: 0 2px 6px rgba(0,0,0,0.15);
-      display: none; /* hidden by default (remove 'display:none' to show) */
+      display: none;
     }
   </style>
 </head>
@@ -31,7 +31,7 @@
   <script>
 /* ========== CONFIG ========== */
 const SIMULATION_INTERVAL_MS = 10000;   // victim move interval during demo
-const POLL_INTERVAL_MS       = 10000;   // victim fetch interval from server (30 sec)
+const POLL_INTERVAL_MS       = 30000;   // victim fetch interval from server (30 sec)
 const SIM_POINTS = [
   { name:'Rasulgarh',     lat:20.295550, lng:85.857514 },
   { name:'Vani Vihar',    lat:20.302518, lng:85.840945 },
@@ -45,6 +45,9 @@ const SIM_POINTS = [
 const DEST_MOVE_THRESHOLD_M = 4;    // when victim moves this many meters, recalc route
 const MIN_ROUTE_INTERVAL_MS = 2500; // throttle route requests
 const GPS_INTERPOLATION_MS = 800;   // smoothing of rescuer marker between GPS fixes
+
+/* Toggle between dummy simulation and real server polling */
+const USE_SERVER = false; // false = dummy SIM_POINTS, true = call SOAP API
 
 /* === Query Params for victim details === */
 const urlParams = new URLSearchParams(window.location.search);
@@ -80,7 +83,7 @@ function initMap() {
   map = new google.maps.Map(document.getElementById('map'), {
     center: { lat: SIM_POINTS[0].lat, lng: SIM_POINTS[0].lng },
     zoom: 15,
-    gestureHandling: 'greedy', // allow user gestures
+    gestureHandling: 'greedy',
     tilt: 0,
     mapTypeControl: false,
     streetViewControl: false,
@@ -91,26 +94,22 @@ function initMap() {
   directionsRenderer = new google.maps.DirectionsRenderer({
     map: map,
     suppressMarkers: true,
-    preserveViewport: true // IMPORTANT: do not auto-fit map to route; we keep rescuer centered
+    preserveViewport: true
   });
 
-  // place initial victim marker (simulation)
-  const p = SIM_POINTS[0];
-  placeVictim(p);
-
   statusEl.style.display = "block";
-  statusEl.textContent = "Demo mode (dummy path)";
 
-  // ================== VICTIM SOURCE SELECTION ==================
-  // For DEMO with dummy coordinates (current behavior):
-  //startSimulation();
-
-  // For REAL LIVE DATA from server (30s polling):
-  //   1) Comment OUT the line above:  // startSimulation();
-  //   2) Uncomment the line below:    startServerPolling();
-  //
-  startServerPolling();
-  // =============================================================
+  if (USE_SERVER) {
+    // 🔴 REAL SERVER MODE
+    statusEl.textContent = "Connecting to SOS server…";
+    startServerPolling();
+  } else {
+    // 🟢 DUMMY SIMULATION MODE (exact behavior as earlier)
+    const p = SIM_POINTS[0];
+    placeVictim(p);
+    statusEl.textContent = "Demo mode (dummy path)";
+    startSimulation();
+  }
 
   // start rescuer geolocation
   startRescuerGeolocation();
@@ -121,9 +120,9 @@ function placeVictim(p){
   const pos = { lat: p.lat, lng: p.lng };
 
   const victimIcon = {
-    url: "victim_sos_pin.svg",    // your file in project root
-    scaledSize: new google.maps.Size(50, 50),  // adjust size
-    anchor: new google.maps.Point(25, 50)      // bottom center
+    url: "victim_sos_pin.svg",
+    scaledSize: new google.maps.Size(50, 50),
+    anchor: new google.maps.Point(25, 50)
   };
 
   if(!victimMarker){
@@ -134,7 +133,6 @@ function placeVictim(p){
       icon: victimIcon
     });
 
-    // Create and open info window with victim name & mobile
     victimInfoWindow = new google.maps.InfoWindow({
       content: `<div style="font-weight:600;font-size:14px;line-height:1.4">
                   🚨 SOS Victim<br>
@@ -144,7 +142,6 @@ function placeVictim(p){
     });
     victimInfoWindow.open(map, victimMarker);
 
-    // Click to reopen if closed
     victimMarker.addListener("click", () => {
       victimInfoWindow.open(map, victimMarker);
     });
@@ -169,7 +166,6 @@ function placeVictim(p){
 function placeRescuer(p){
   const pos = { lat: p.lat, lng: p.lng };
   if(!rescuerMarker){
-    // simple bike/person marker — using a small SVG so it rotates nicely if you add rotation later
     const svg = encodeURIComponent(`
       <svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 24 24">
         <circle cx="12" cy="12" r="11" fill="#0b63d6"/>
@@ -204,14 +200,12 @@ function animateMarkerTo(marker, targetLatLng, durationMs = GPS_INTERPOLATION_MS
     const lat = startLat + (endLat - startLat) * t;
     const lng = startLng + (endLng - startLng) * t;
     marker.setPosition({ lat, lng });
-    if(i < steps) {
-      requestAnimationFrame(tick);
-    }
+    if(i < steps) requestAnimationFrame(tick);
   };
   requestAnimationFrame(tick);
 }
 
-/* Draw route using Google Directions API; we set preserveViewport=true so renderer won't change camera */
+/* Draw route using Google Directions API */
 function drawRoute(origin, dest) {
   if(!origin || !dest) return;
   const now = Date.now();
@@ -222,15 +216,13 @@ function drawRoute(origin, dest) {
     origin: { lat: origin.lat, lng: origin.lng },
     destination: { lat: dest.lat, lng: dest.lng },
     travelMode: google.maps.TravelMode.DRIVING,
-    drivingOptions: { departureTime: new Date() } // use current time for ETA
+    drivingOptions: { departureTime: new Date() }
   };
 
   directionsService.route(request, (result, status) => {
     if(status === google.maps.DirectionsStatus.OK && result) {
       directionsRenderer.setDirections(result);
-      // we suppressed default markers; show our markers remain
     } else {
-      // fallback: you may handle errors or fallback to polyline from route geometry if needed
       console.warn('Directions request failed: ', status);
     }
   });
@@ -258,7 +250,6 @@ function startSimulation() {
 }
 
 /* ==================== REAL SERVER INTEGRATION ==================== */
-/* Build SOAP body for GetSOSLocationDetails */
 function buildSoapBody(mobileNo) {
   return `<?xml version="1.0" encoding="utf-8"?>
 <soap:Envelope xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
@@ -276,7 +267,6 @@ function buildSoapBody(mobileNo) {
 </soap:Envelope>`;
 }
 
-/* Call the SOAP API and return {lat, lng, name} */
 async function fetchVictimFromServer() {
   const url = 'https://services-op.odisha.gov.in/Mobile_App/CitizenService.asmx';
   const soapAction = 'http://tempuri.org/GetSOSLocationDetails';
@@ -297,12 +287,9 @@ async function fetchVictimFromServer() {
   }
 
   const text = await res.text();
-  // console.log('RAW SOAP RESPONSE:', text); // uncomment for debugging
-
   const parser = new DOMParser();
   const xml = parser.parseFromString(text, 'text/xml');
 
-  // NOTE: API uses "lattitude" (double t) and "longitude"
   const latNode = xml.getElementsByTagName('lattitude')[0];
   const lngNode = xml.getElementsByTagName('longitude')[0];
 
@@ -322,67 +309,57 @@ async function fetchVictimFromServer() {
   return { lat, lng, name: VICTIM_NAME || 'SOS Victim' };
 }
 
-/* Poll server every 30 seconds and update victim + route */
 function startServerPolling() {
-  // If simulation accidentally running, stop it
   if (simTimer) {
     clearInterval(simTimer);
     simTimer = null;
   }
-
-  statusEl.style.display = "block";
-  statusEl.textContent = `Live mode (server) - ${VICTIM_NAME} / ${VICTIM_MOBILE}`;
 
   const doPoll = async () => {
     try {
       const prev = lastVictim ? { lat: lastVictim.lat, lng: lastVictim.lng } : null;
       const victim = await fetchVictimFromServer();
 
-      // Update victim marker and lastVictim (same as simulation)
       placeVictim(victim);
 
-      // Recalculate route if rescuer is known
       if (rescuerPos) {
         const moved = prev ? distanceMeters(prev, victim) : Infinity;
         if (moved >= DEST_MOVE_THRESHOLD_M) {
           drawRoute(rescuerPos, victim);
         }
       }
+
+      statusEl.textContent = `Live tracking: ${VICTIM_NAME} (${VICTIM_MOBILE})`;
+
     } catch (e) {
       console.error('Error fetching victim from server:', e);
+      statusEl.textContent = 'Error contacting SOS server (likely CORS).';
     }
   };
 
-  // First call immediately, then every POLL_INTERVAL_MS
   doPoll();
   pollTimer = setInterval(doPoll, POLL_INTERVAL_MS);
 }
 /* ================================================================ */
 
-/* Start geolocation for rescuer: get one shot + watch, interpolate marker, always pan to rescuer */
 function startRescuerGeolocation(){
   if(!('geolocation' in navigator)) {
     console.warn('Geolocation unsupported');
     return;
   }
 
-  // get initial position
   navigator.geolocation.getCurrentPosition(pos => {
     const p = { lat: pos.coords.latitude, lng: pos.coords.longitude };
     rescuerPos = p;
     placeRescuer(p);
-    // initially draw route if victim exists
     if(lastVictim) drawRoute(rescuerPos, lastVictim);
-    // center on rescuer
     map.setCenter({ lat: rescuerPos.lat, lng: rescuerPos.lng });
   }, err => {
     console.warn('getCurrentPosition error', err);
   }, { enableHighAccuracy: true, timeout:8000 });
 
-  // watch position
   navigator.geolocation.watchPosition(pos => {
     const newPos = { lat: pos.coords.latitude, lng: pos.coords.longitude };
-    // smooth visual move
     if(rescuerMarker){
       animateMarkerTo(rescuerMarker, newPos, GPS_INTERPOLATION_MS);
     } else {
@@ -390,10 +367,8 @@ function startRescuerGeolocation(){
     }
     rescuerPos = newPos;
 
-    // ALWAYS pan/center map to rescuer -- keeps rescuer focal
     map.panTo({ lat: newPos.lat, lng: newPos.lng });
 
-    // Recalculate route to latest victim when needed (throttled inside drawRoute)
     if(lastVictim) drawRoute(rescuerPos, lastVictim);
   }, err => {
     console.warn('watchPosition error', err);
