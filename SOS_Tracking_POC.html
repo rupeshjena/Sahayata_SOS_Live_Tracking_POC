@@ -101,11 +101,48 @@ function distanceMeters(a,b){
   return 2 * R * Math.atan2(Math.sqrt(aa), Math.sqrt(1-aa));
 }
 
+/* Bearing helper for navigation-like rotation */
+function bearingDegrees(from, to) {
+  if (!from || !to) return 0;
+  const toRad = Math.PI / 180;
+  const toDeg = 180 / Math.PI;
+
+  const lat1 = from.lat * toRad;
+  const lat2 = to.lat * toRad;
+  const dLon = (to.lng - from.lng) * toRad;
+
+  const y = Math.sin(dLon) * Math.cos(lat2);
+  const x = Math.cos(lat1) * Math.sin(lat2) -
+            Math.sin(lat1) * Math.cos(lat2) * Math.cos(dLon);
+
+  let brng = Math.atan2(y, x) * toDeg;
+  brng = (brng + 360) % 360;
+  return brng;
+}
+
+/* Rotate map view so rescuer -> victim is "up", like native navigation */
+function updateNavigationView() {
+  if (!map || !rescuerPos || !lastVictim) return;
+
+  if (typeof map.setHeading === "function") {
+    try {
+      const heading = bearingDegrees(rescuerPos, lastVictim);
+      map.setHeading(heading);
+      if (typeof map.setTilt === "function") {
+        map.setTilt(45); // Optional tilt for a bit of 3D feel
+      }
+    } catch (e) {
+      // ignore any errors silently
+    }
+  }
+}
+
 /* ================== INIT MAP ================== */
 function initMap() {
   map = new google.maps.Map(document.getElementById('map'), {
     center: { lat: SIM_POINTS[0].lat, lng: SIM_POINTS[0].lng },
     zoom: 15,
+    maxZoom: 18,               // ⬅️ limit max zoom so visuals stay clean
     gestureHandling: 'greedy',
     tilt: 0,
 
@@ -193,8 +230,8 @@ function placeRescuer(p){
       title: "You (rescuer)",
       icon: {
         url: `data:image/svg+xml;charset=utf-8,${svg}`,
-        scaledSize: new google.maps.Size(36,26),
-        anchor: new google.maps.Point(18,18)
+        scaledSize: new google.maps.Size(50,50),
+        anchor: new google.maps.Point(25,50)
       }
     });
 
@@ -222,7 +259,7 @@ function animateMarkerTo(marker, targetLatLng, durationMs = GPS_INTERPOLATION_MS
   requestAnimationFrame(step);
 }
 
-/* Directions (UPDATED with Distance + ETA) */
+/* Directions (UPDATED with Distance + ETA + navigation-like rotation) */
 function drawRoute(origin, dest){
   if(!origin || !dest) return;
   const now = Date.now();
@@ -251,6 +288,9 @@ function drawRoute(origin, dest){
           `Distance: ${distanceText}, ETA: ${durationText}`;
       }
       // =====================================
+
+      // Rotate map like native navigation (if supported)
+      updateNavigationView();
     }
   });
 }
@@ -380,6 +420,3 @@ initMap();
   </script>
 </body>
 </html>
-
-
-
