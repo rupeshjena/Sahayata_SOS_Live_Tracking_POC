@@ -142,7 +142,7 @@ function initMap() {
   map = new google.maps.Map(document.getElementById('map'), {
     center: { lat: SIM_POINTS[0].lat, lng: SIM_POINTS[0].lng },
     zoom: 15,
-    maxZoom: 18,               // ⬅️ limit max zoom so visuals stay clean
+    maxZoom: 19,               // ⬅️ limit max zoom so visuals stay clean
     gestureHandling: 'greedy',
     tilt: 0,
 
@@ -227,7 +227,7 @@ function placeRescuer(p){
     rescuerMarker = new google.maps.Marker({
       position: pos,
       map: map,
-      title: "You (rescuer)",
+      title: "You",
       icon: {
         url: `data:image/svg+xml;charset=utf-8,${svg}`,
         scaledSize: new google.maps.Size(50,50),
@@ -420,3 +420,4 @@ initMap();
   </script>
 </body>
 </html>
+
