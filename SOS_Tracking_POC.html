@@ -4,9 +4,11 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>SOS POC — rescuer-centered live navigation (Google Maps)</title>
+
   <style>
     html,body,#map { height:100%; margin:0; padding:0; }
-    /* small top-left status pill (loader / status) */
+
+    /* small top-left status pill */
     #status {
       position: absolute;
       left: 8px;
@@ -20,19 +22,39 @@
       box-shadow: 0 2px 6px rgba(0,0,0,0.15);
       display: none;
     }
+
+    /* recenter button */
+    #recenterBtn {
+      position: absolute;
+      bottom: 20px;
+      right: 20px;
+      z-index: 1200;
+      background: white;
+      padding: 10px 14px;
+      border-radius: 8px;
+      box-shadow: 0 2px 6px rgba(0,0,0,0.25);
+      font-family: Arial, sans-serif;
+      font-weight: 600;
+      cursor: pointer;
+      user-select: none;
+    }
   </style>
 </head>
+
 <body>
   <div id="status">Initializing…</div>
   <div id="map"></div>
+  <div id="recenterBtn">⦿ Recenter</div>
 
-  <!-- Replace the key below with your Google Maps JS API key -->
+  <!-- Google Maps JS API -->
   <script src="https://maps.googleapis.com/maps/api/js?key=AIzaSyCxHxFiNlzq9TUjWiemfQpRXla7NODMJV0&libraries=places"></script>
+
   <script>
-/*CREATED BY RUPESH*/
+/CREATED BY RUPESH/
+
 /* ========== CONFIG ========== */
-const SIMULATION_INTERVAL_MS = 10000;   // victim move interval during demo
-const POLL_INTERVAL_MS       = 10000;   // victim fetch interval from server (30 sec)
+const SIMULATION_INTERVAL_MS = 10000;
+const POLL_INTERVAL_MS       = 10000;
 const SIM_POINTS = [
   { name:'Rasulgarh',     lat:20.295550, lng:85.857514 },
   { name:'Vani Vihar',    lat:20.302518, lng:85.840945 },
@@ -43,24 +65,19 @@ const SIM_POINTS = [
   { name:'Fire Station',  lat:20.279040, lng:85.799265 },
   { name:'Baramunda',     lat:20.277640, lng:85.794852 }
 ];
-const DEST_MOVE_THRESHOLD_M = 4;    // when victim moves this many meters, recalc route
-const MIN_ROUTE_INTERVAL_MS = 2500; // throttle route requests
-const GPS_INTERPOLATION_MS = 800;   // smoothing of rescuer marker between GPS fixes
 
-/* Toggle between dummy simulation and real server polling */
-const USE_SERVER = true; // false = dummy SIM_POINTS, true = call SOAP API
+const DEST_MOVE_THRESHOLD_M = 4;
+const MIN_ROUTE_INTERVAL_MS = 2500;
+const GPS_INTERPOLATION_MS = 800;
 
-/* === Query Params for victim details === */
 const urlParams = new URLSearchParams(window.location.search);
 const VICTIM_MOBILE = urlParams.get("mobile") || "8093831436";
 const VICTIM_NAME   = urlParams.get("name")   || "Rupesh";
 
-// Auto-disable server mode if victim mobile is missing
+let USE_SERVER = true;
 if (!VICTIM_MOBILE || VICTIM_MOBILE.trim() === "") {
     USE_SERVER = false;
 }
-
-// Mobile number for SOS API (now driven by query param)
 const SOS_MOBILE_NO = VICTIM_MOBILE;
 /* ============================== */
 
@@ -70,30 +87,32 @@ let rescuerPos = null, lastVictim = null;
 let simIndex = 0, simTimer = null, pollTimer = null;
 let lastRouteTime = 0;
 let victimInfoWindow = null;
+
 const statusEl = document.getElementById('status');
 
-/* Small helper: haversine distance in meters */
+/* Haversine */
 function distanceMeters(a,b){
   if(!a||!b) return Infinity;
   const R = 6371000, toRad = v => v * Math.PI / 180;
   const dLat = toRad(b.lat - a.lat), dLon = toRad(b.lng - a.lng);
   const lat1 = toRad(a.lat), lat2 = toRad(b.lat);
-  const sinDLat = Math.sin(dLat/2), sinDLon = Math.sin(dLon/2);
-  const aa = sinDLat*sinDLat + sinDLon*sinDLon * Math.cos(lat1) * Math.cos(lat2);
-  const c = 2 * Math.atan2(Math.sqrt(aa), Math.sqrt(1-aa));
-  return R * c;
+  const aa = Math.sin(dLat/2)**2 +
+             Math.sin(dLon/2)**2 * Math.cos(lat1) * Math.cos(lat2);
+  return 2 * R * Math.atan2(Math.sqrt(aa), Math.sqrt(1-aa));
 }
 
-/* Initialize Google Map and Directions */
+/* ================== INIT MAP ================== */
 function initMap() {
   map = new google.maps.Map(document.getElementById('map'), {
     center: { lat: SIM_POINTS[0].lat, lng: SIM_POINTS[0].lng },
     zoom: 15,
     gestureHandling: 'greedy',
     tilt: 0,
+
     mapTypeControl: false,
     streetViewControl: false,
-    fullscreenControl: false
+    fullscreenControl: false,
+    zoomControl: false   // ⛔ hide zoom buttons
   });
 
   directionsService = new google.maps.DirectionsService();
@@ -106,27 +125,23 @@ function initMap() {
   statusEl.style.display = "block";
 
   if (USE_SERVER) {
-    // 🔴 REAL SERVER MODE
     statusEl.textContent = "Connecting to server…";
     startServerPolling();
   } else {
-    // 🟢 DUMMY SIMULATION MODE (exact behavior as earlier)
-    const p = SIM_POINTS[0];
-    placeVictim(p);
+    placeVictim(SIM_POINTS[0]);
     statusEl.textContent = "Demo mode";
     startSimulation();
   }
 
-  // start rescuer geolocation
   startRescuerGeolocation();
 }
 
-/* Place or update victim marker (with InfoWindow showing victim name) */
+/* ================== VICTIM MARKER ================== */
 function placeVictim(p){
   const pos = { lat: p.lat, lng: p.lng };
 
   const victimIcon = {
-    url: "victim_sos_pin.svg",
+    url: "victim_sos_pin.SVG",
     scaledSize: new google.maps.Size(50, 50),
     anchor: new google.maps.Point(25, 50)
   };
@@ -140,129 +155,132 @@ function placeVictim(p){
     });
 
     victimInfoWindow = new google.maps.InfoWindow({
-      content: `<div style="font-weight:600;font-size:14px;line-height:1.4">
-                  🚨 SOS Victim<br>
-                  Name: ${VICTIM_NAME}<br>
-                  Mobile: ${VICTIM_MOBILE}
+      content: `<div style="font-weight:600;font-size:14px">
+                  🚨 SOS Victim<br>Name: ${VICTIM_NAME}<br>Mobile: ${VICTIM_MOBILE}
                 </div>`
     });
-    victimInfoWindow.open(map, victimMarker);
 
-    victimMarker.addListener("click", () => {
-      victimInfoWindow.open(map, victimMarker);
-    });
+    victimInfoWindow.open(map, victimMarker);
+    victimMarker.addListener("click", () => victimInfoWindow.open(map, victimMarker));
 
   } else {
     victimMarker.setPosition(pos);
-    if (victimInfoWindow) {
-      victimInfoWindow.setContent(
-        `<div style="font-weight:600;font-size:14px;line-height:1.4">
-           🚨 SOS Victim<br>
-           Name: ${VICTIM_NAME}<br>
-           Mobile: ${VICTIM_MOBILE}
-         </div>`
-      );
-    }
   }
 
-  lastVictim = { lat: p.lat, lng: p.lng, name: VICTIM_NAME };
+  lastVictim = { lat: p.lat, lng: p.lng };
 }
 
-/* Place or update rescuer marker (bike icon via SVG path) */
+/* ================== RESCUER MARKER ================== */
 function placeRescuer(p){
   const pos = { lat: p.lat, lng: p.lng };
+
   if(!rescuerMarker){
+    /* MAN ICON SVG */
     const svg = encodeURIComponent(`
-      <svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 24 24">
-        <circle cx="12" cy="12" r="11" fill="#0b63d6"/>
-        <text x="50%" y="53%" font-size="14" text-anchor="middle" fill="white" font-family="sans-serif">🏍️</text>
-      </svg>`);
+	<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+	  <circle cx="12" cy="12" r="11" fill="#1b73e8"/>
+	  <path d="M12 4l6 14-6-3-6 3 6-14z"
+			fill="#ffffff"
+			stroke="#ffffff"
+			stroke-width="0.6"
+			stroke-linejoin="round"/>
+	</svg>
+	`);
+
     rescuerMarker = new google.maps.Marker({
       position: pos,
       map: map,
-      title: 'You (rescuer)',
+      title: "You (rescuer)",
       icon: {
         url: `data:image/svg+xml;charset=utf-8,${svg}`,
         scaledSize: new google.maps.Size(36,36),
         anchor: new google.maps.Point(18,18)
       }
     });
+
   } else {
     rescuerMarker.setPosition(pos);
   }
 }
 
-/* Smoothly interpolate marker from current -> target over durationMs */
-function animateMarkerTo(marker, targetLatLng, durationMs = GPS_INTERPOLATION_MS) {
-  if(!marker) { placeRescuer(targetLatLng); return; }
+/* Smooth animation */
+function animateMarkerTo(marker, targetLatLng, durationMs = GPS_INTERPOLATION_MS){
+  if(!marker){ placeRescuer(targetLatLng); return; }
+
   const start = marker.getPosition();
-  const startLat = start.lat(), startLng = start.lng();
-  const endLat = targetLatLng.lat, endLng = targetLatLng.lng;
   const steps = Math.max(6, Math.floor(durationMs / 50));
   let i = 0;
-  const tick = () => {
+
+  function step(){
     i++;
-    const t = i / steps;
-    const lat = startLat + (endLat - startLat) * t;
-    const lng = startLng + (endLng - startLng) * t;
-    marker.setPosition({ lat, lng });
-    if(i < steps) requestAnimationFrame(tick);
-  };
-  requestAnimationFrame(tick);
+    const t = i/steps;
+    const lat = start.lat() + (targetLatLng.lat - start.lat()) * t;
+    const lng = start.lng() + (targetLatLng.lng - start.lng()) * t;
+    marker.setPosition({lat,lng});
+    if(i < steps) requestAnimationFrame(step);
+  }
+  requestAnimationFrame(step);
 }
 
-/* Draw route using Google Directions API */
-function drawRoute(origin, dest) {
+/* Directions (UPDATED with Distance + ETA) */
+function drawRoute(origin, dest){
   if(!origin || !dest) return;
   const now = Date.now();
   if(now - lastRouteTime < MIN_ROUTE_INTERVAL_MS) return;
   lastRouteTime = now;
 
-  const request = {
-    origin: { lat: origin.lat, lng: origin.lng },
-    destination: { lat: dest.lat, lng: dest.lng },
+  directionsService.route({
+    origin,
+    destination: dest,
     travelMode: google.maps.TravelMode.DRIVING,
     drivingOptions: { departureTime: new Date() }
-  };
-
-  directionsService.route(request, (result, status) => {
-    if(status === google.maps.DirectionsStatus.OK && result) {
+  }, (result, status) => {
+    if(status === google.maps.DirectionsStatus.OK){
       directionsRenderer.setDirections(result);
-    } else {
-      console.warn('Directions request failed: ', status);
+
+      // ===== Distance + ETA calculation =====
+      const route = result.routes && result.routes[0];
+      const leg   = route && route.legs && route.legs[0];
+
+      if (leg) {
+        const distanceText = leg.distance && leg.distance.text ? leg.distance.text : "";
+        const durationText = leg.duration && leg.duration.text ? leg.duration.text : "";
+
+        statusEl.textContent =
+          `Live tracking: ${VICTIM_NAME} (${VICTIM_MOBILE}) — ` +
+          `Distance: ${distanceText}, ETA: ${durationText}`;
+      }
+      // =====================================
     }
   });
 }
 
-/* Simulation loop (victim moves through SIM_POINTS). */
-function startSimulation() {
+/* ================== SIMULATION ================== */
+function startSimulation(){
   simIndex = 1;
   placeVictim(SIM_POINTS[0]);
-  simTimer = setInterval(() => {
-    const prev = lastVictim ? { lat: lastVictim.lat, lng: lastVictim.lng } : null;
-    const p = SIM_POINTS[simIndex];
-    const newVictim = { lat: p.lat, lng: p.lng, name: p.name };
-    placeVictim(newVictim);
 
-    if(rescuerPos){
-      const moved = prev ? distanceMeters(prev, newVictim) : Infinity;
-      if(moved >= DEST_MOVE_THRESHOLD_M){
-        drawRoute(rescuerPos, newVictim);
-      }
+  simTimer = setInterval(() => {
+    const prev = lastVictim;
+    const p = SIM_POINTS[simIndex];
+    placeVictim(p);
+
+    if(rescuerPos && distanceMeters(prev, p) >= DEST_MOVE_THRESHOLD_M){
+      drawRoute(rescuerPos, p);
     }
 
     simIndex = (simIndex + 1) % SIM_POINTS.length;
   }, SIMULATION_INTERVAL_MS);
 }
 
-/* ==================== REAL SERVER INTEGRATION ==================== */
-function buildSoapBody(mobileNo) {
+/* ================== SERVER POLLING ================== */
+function buildSoapBody(mobileNo){
   return `<?xml version="1.0" encoding="utf-8"?>
 <soap:Envelope xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
   <soap:Body>
     <GetSOSLocationDetails xmlns="http://tempuri.org/">
-      <MobileNo>${mobileNo}</MobileNo>
-      <SelfMobile></SelfMobile>
+      <MobileNo></MobileNo>
+      <SelfMobile>${mobileNo}</SelfMobile>
       <imieno></imieno>
       <mobiletype></mobiletype>
       <strToken></strToken>
@@ -273,127 +291,92 @@ function buildSoapBody(mobileNo) {
 </soap:Envelope>`;
 }
 
-async function fetchVictimFromServer() {
-  const url = 'https://services-op.odisha.gov.in/Mobile_App/CitizenService.asmx';
-  const soapAction = 'http://tempuri.org/GetSOSLocationDetails';
-  const body = buildSoapBody(SOS_MOBILE_NO);
+async function fetchVictimFromServer(){
+  const url  = "https://services-op.odisha.gov.in/Mobile_App/CitizenService.asmx";
+  const action = "http://tempuri.org/GetSOSLocationDetails";
 
   const res = await fetch(url, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'text/xml; charset=utf-8',
-      'SOAPAction': soapAction
+    method:"POST",
+    headers:{
+      "Content-Type":"text/xml; charset=utf-8",
+      "SOAPAction":action
     },
-    body
+    body: buildSoapBody(SOS_MOBILE_NO)
   });
 
-  if (!res.ok) {
-    console.warn('SOS API HTTP error:', res.status, res.statusText);
-    throw new Error('HTTP ' + res.status);
-  }
+  const txt = await res.text();
+  const xml = new DOMParser().parseFromString(txt,"text/xml");
 
-  const text = await res.text();
-  const parser = new DOMParser();
-  const xml = parser.parseFromString(text, 'text/xml');
+  const lat = parseFloat(xml.getElementsByTagName("lattitude")[0]?.textContent);
+  const lng = parseFloat(xml.getElementsByTagName("longitude")[0]?.textContent);
 
-  const latNode = xml.getElementsByTagName('lattitude')[0];
-  const lngNode = xml.getElementsByTagName('longitude')[0];
-
-  if (!latNode || !lngNode) {
-    console.warn('Could not find lattitude/longitude nodes in response');
-    throw new Error('No location data');
-  }
-
-  const lat = parseFloat(latNode.textContent);
-  const lng = parseFloat(lngNode.textContent);
-
-  if (isNaN(lat) || isNaN(lng)) {
-    console.warn('Invalid lat/lng values from server:', latNode.textContent, lngNode.textContent);
-    throw new Error('Invalid coordinates');
-  }
-
-  return { lat, lng, name: VICTIM_NAME || 'SOS Victim' };
+  return { lat, lng };
 }
 
-function startServerPolling() {
-  if (simTimer) {
-    clearInterval(simTimer);
-    simTimer = null;
-  }
-
-  const doPoll = async () => {
+function startServerPolling(){
+  const poll = async () => {
     try {
-      const prev = lastVictim ? { lat: lastVictim.lat, lng: lastVictim.lng } : null;
-      const victim = await fetchVictimFromServer();
+      const prev = lastVictim;
+      const v = await fetchVictimFromServer();
+      placeVictim(v);
 
-      placeVictim(victim);
-
-      if (rescuerPos) {
-        const moved = prev ? distanceMeters(prev, victim) : Infinity;
-        if (moved >= DEST_MOVE_THRESHOLD_M) {
-          drawRoute(rescuerPos, victim);
-        }
+      if(rescuerPos && distanceMeters(prev, v) >= DEST_MOVE_THRESHOLD_M){
+        drawRoute(rescuerPos, v);
       }
 
+      // This will be overwritten with Distance + ETA when route is drawn
       statusEl.textContent = `Live tracking: ${VICTIM_NAME} (${VICTIM_MOBILE})`;
 
-    } catch (e) {
-      console.error('Error fetching victim from server:', e);
-      statusEl.textContent = 'Error contacting SOS server.';
+    } catch(e){
+      statusEl.textContent = "Error contacting SOS server.";
     }
   };
 
-  doPoll();
-  pollTimer = setInterval(doPoll, POLL_INTERVAL_MS);
+  poll();
+  pollTimer = setInterval(poll, POLL_INTERVAL_MS);
 }
-/* ================================================================ */
 
+/* ================== RESCUER GEOLOCATION ================== */
 function startRescuerGeolocation(){
-  if(!('geolocation' in navigator)) {
-    console.warn('Geolocation unsupported');
-    return;
-  }
+  if(!navigator.geolocation) return;
 
   navigator.geolocation.getCurrentPosition(pos => {
     const p = { lat: pos.coords.latitude, lng: pos.coords.longitude };
     rescuerPos = p;
     placeRescuer(p);
+
     if(lastVictim) drawRoute(rescuerPos, lastVictim);
-    map.setCenter({ lat: rescuerPos.lat, lng: rescuerPos.lng });
-  }, err => {
-    console.warn('getCurrentPosition error', err);
-  }, { enableHighAccuracy: true, timeout:8000 });
+    /* ❗ Auto-center removed */
+  });
 
   navigator.geolocation.watchPosition(pos => {
     const newPos = { lat: pos.coords.latitude, lng: pos.coords.longitude };
+
     if(rescuerMarker){
-      animateMarkerTo(rescuerMarker, newPos, GPS_INTERPOLATION_MS);
+      animateMarkerTo(rescuerMarker, newPos);
     } else {
       placeRescuer(newPos);
     }
-    rescuerPos = newPos;
 
-    map.panTo({ lat: newPos.lat, lng: newPos.lng });
+    rescuerPos = newPos;
+    /* ❗ Auto-center removed */
 
     if(lastVictim) drawRoute(rescuerPos, lastVictim);
-  }, err => {
-    console.warn('watchPosition error', err);
-  }, { enableHighAccuracy: true, maximumAge: 2000, timeout: 10000 });
+
+  }, null, { enableHighAccuracy:true, maximumAge:2000, timeout:10000 });
 }
 
-/* --- Start everything --- */
-function start() {
-  initMap();
-}
+/* ================== RECENTER BUTTON ================== */
+document.getElementById("recenterBtn").onclick = () => {
+  if(rescuerPos){
+    map.setCenter({ lat: rescuerPos.lat, lng: rescuerPos.lng });
+  }
+};
 
-start();
+/* Start */
+initMap();
 
-/*CREATED BY RUPESH*/
+/CREATED BY RUPESH/
   </script>
 </body>
 </html>
-
-
-
-
-
