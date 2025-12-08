@@ -23,6 +23,30 @@
       display: none;
     }
 
+    /* heartbeat dot (shown when route is updating) */
+    #status::before {
+      content: "";
+      display: inline-block;
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      margin-right: 6px;
+      background-color: #d9534f;
+      transform: scale(0.7);
+      opacity: 0;
+    }
+
+    #status.updating::before {
+      opacity: 1;
+      animation: pulse 1s infinite;
+    }
+
+    @keyframes pulse {
+      0%   { transform: scale(0.7); opacity: 0.7; }
+      50%  { transform: scale(1.1); opacity: 1;   }
+      100% { transform: scale(0.7); opacity: 0.7; }
+    }
+
     /* recenter button */
     #recenterBtn {
       position: absolute;
@@ -50,7 +74,7 @@
   <script src="https://maps.googleapis.com/maps/api/js?key=AIzaSyCxHxFiNlzq9TUjWiemfQpRXla7NODMJV0&libraries=places"></script>
 
   <script>
-/CREATED BY RUPESH/
+/*CREATED BY RUPESH*/
 
 /* ========== CONFIG ========== */
 const SIMULATION_INTERVAL_MS = 10000;
@@ -90,6 +114,12 @@ let victimInfoWindow = null;
 
 const statusEl = document.getElementById('status');
 
+/* NEW: status-related globals */
+let latestDistanceText = "";
+let latestDurationText = "";
+let latestSpeedKmph    = null;
+let lastRescuerTimeMs  = null;
+
 /* Haversine */
 function distanceMeters(a,b){
   if(!a||!b) return Infinity;
@@ -101,7 +131,7 @@ function distanceMeters(a,b){
   return 2 * R * Math.atan2(Math.sqrt(aa), Math.sqrt(1-aa));
 }
 
-/* Bearing helper for navigation-like rotation */
+/* Bearing helper */
 function bearingDegrees(from, to) {
   if (!from || !to) return 0;
   const toRad = Math.PI / 180;
@@ -120,21 +150,61 @@ function bearingDegrees(from, to) {
   return brng;
 }
 
-/* Rotate map view so rescuer -> victim is "up", like native navigation */
+/* Full navigation-style camera: follow rescuer with tilt + heading */
+function updateNavigationCamera(newPos, heading) {
+  if (!map || !newPos) return;
+
+  try {
+    // Center on rescuer
+    map.setCenter({ lat: newPos.lat, lng: newPos.lng });
+
+    // Rotate + tilt if supported (vector map)
+    if (typeof map.setHeading === "function") {
+      map.setHeading(heading || 0);
+    }
+    if (typeof map.setTilt === "function") {
+      map.setTilt(45); // 3D effect like navigation
+    }
+  } catch (e) {
+    // ignore any errors silently
+  }
+}
+
+/* Rotate map view rescuer -> victim (used after route calc as fallback) */
 function updateNavigationView() {
   if (!map || !rescuerPos || !lastVictim) return;
 
-  if (typeof map.setHeading === "function") {
-    try {
-      const heading = bearingDegrees(rescuerPos, lastVictim);
-      map.setHeading(heading);
-      if (typeof map.setTilt === "function") {
-        map.setTilt(45); // Optional tilt for a bit of 3D feel
-      }
-    } catch (e) {
-      // ignore any errors silently
-    }
+  const heading = bearingDegrees(rescuerPos, lastVictim);
+  updateNavigationCamera(rescuerPos, heading);
+}
+
+/* Heartbeat class toggler */
+function setRouteUpdating(isUpdating) {
+  if (!statusEl) return;
+  if (isUpdating) {
+    statusEl.classList.add("updating");
+  } else {
+    statusEl.classList.remove("updating");
   }
+}
+
+/* Centralised status text builder */
+function updateStatusLabel() {
+  if (!statusEl) return;
+
+  const parts = [`Live tracking: ${VICTIM_NAME} (${VICTIM_MOBILE})`];
+
+  if (latestDistanceText) {
+    parts.push(`Distance: ${latestDistanceText}`);
+  }
+  if (latestDurationText) {
+    parts.push(`ETA: ${latestDurationText}`);
+  }
+  if (latestSpeedKmph != null) {
+    parts.push(`Speed: ${latestSpeedKmph.toFixed(1)} km/h`);
+  }
+
+  statusEl.textContent = parts.join(" — ");
 }
 
 /* ================== INIT MAP ================== */
@@ -142,7 +212,7 @@ function initMap() {
   map = new google.maps.Map(document.getElementById('map'), {
     center: { lat: SIM_POINTS[0].lat, lng: SIM_POINTS[0].lng },
     zoom: 15,
-    maxZoom: 19,               // ⬅️ limit max zoom so visuals stay clean
+    maxZoom: 18,               // keep zoom reasonable to avoid visual distortions
     gestureHandling: 'greedy',
     tilt: 0,
 
@@ -227,7 +297,7 @@ function placeRescuer(p){
     rescuerMarker = new google.maps.Marker({
       position: pos,
       map: map,
-      title: "You",
+      title: "You (rescuer)",
       icon: {
         url: `data:image/svg+xml;charset=utf-8,${svg}`,
         scaledSize: new google.maps.Size(50,50),
@@ -259,7 +329,7 @@ function animateMarkerTo(marker, targetLatLng, durationMs = GPS_INTERPOLATION_MS
   requestAnimationFrame(step);
 }
 
-/* Directions (UPDATED with Distance + ETA + navigation-like rotation) */
+/* Directions (Distance + ETA + navigation-like rotation + heartbeat) */
 function drawRoute(origin, dest){
   if(!origin || !dest) return;
   const now = Date.now();
@@ -283,15 +353,18 @@ function drawRoute(origin, dest){
         const distanceText = leg.distance && leg.distance.text ? leg.distance.text : "";
         const durationText = leg.duration && leg.duration.text ? leg.duration.text : "";
 
-        statusEl.textContent =
-          `Live tracking: ${VICTIM_NAME} (${VICTIM_MOBILE}) — ` +
-          `Distance: ${distanceText}, ETA: ${durationText}`;
+        latestDistanceText = distanceText;
+        latestDurationText = durationText;
+        updateStatusLabel(); // keep label always populated
       }
       // =====================================
 
-      // Rotate map like native navigation (if supported)
+      // Rotate map like navigation towards victim (fallback/orientation)
       updateNavigationView();
     }
+
+    // Stop heartbeat once route calculation finished (success or fail)
+    setRouteUpdating(false);
   });
 }
 
@@ -306,6 +379,8 @@ function startSimulation(){
     placeVictim(p);
 
     if(rescuerPos && distanceMeters(prev, p) >= DEST_MOVE_THRESHOLD_M){
+      // victim moved in dummy mode -> show heartbeat and recalc route
+      setRouteUpdating(true);
       drawRoute(rescuerPos, p);
     }
 
@@ -361,14 +436,16 @@ function startServerPolling(){
       placeVictim(v);
 
       if(rescuerPos && distanceMeters(prev, v) >= DEST_MOVE_THRESHOLD_M){
+        // victim moved from server -> show heartbeat and recalc route
+        setRouteUpdating(true);
         drawRoute(rescuerPos, v);
       }
 
-      // This will be overwritten with Distance + ETA when route is drawn
-      statusEl.textContent = `Live tracking: ${VICTIM_NAME} (${VICTIM_MOBILE})`;
+      // Status label is maintained by drawRoute + updateStatusLabel
 
     } catch(e){
       statusEl.textContent = "Error contacting SOS server.";
+      setRouteUpdating(false);
     }
   };
 
@@ -383,14 +460,29 @@ function startRescuerGeolocation(){
   navigator.geolocation.getCurrentPosition(pos => {
     const p = { lat: pos.coords.latitude, lng: pos.coords.longitude };
     rescuerPos = p;
+    lastRescuerTimeMs = Date.now(); // initialise for speed calc
     placeRescuer(p);
 
     if(lastVictim) drawRoute(rescuerPos, lastVictim);
-    /* ❗ Auto-center removed */
   });
 
   navigator.geolocation.watchPosition(pos => {
     const newPos = { lat: pos.coords.latitude, lng: pos.coords.longitude };
+    const now = Date.now();
+    const prevPos = rescuerPos ? { lat: rescuerPos.lat, lng: rescuerPos.lng } : null;
+
+    // Compute speed based on previous rescuerPos and timestamp
+    if (rescuerPos && lastRescuerTimeMs != null) {
+      const dtSec = (now - lastRescuerTimeMs) / 1000;
+      const distM = distanceMeters(rescuerPos, newPos);
+      if (dtSec > 0.5 && distM > 0.5) { // basic noise filter
+        const speed = (distM / dtSec) * 3.6; // m/s → km/h
+        latestSpeedKmph = speed;
+        updateStatusLabel();
+      }
+    }
+
+    lastRescuerTimeMs = now;
 
     if(rescuerMarker){
       animateMarkerTo(rescuerMarker, newPos);
@@ -399,7 +491,20 @@ function startRescuerGeolocation(){
     }
 
     rescuerPos = newPos;
-    /* ❗ Auto-center removed */
+
+    // Full navigation-style camera: follow movement direction
+    if (prevPos) {
+      const headingMove = bearingDegrees(prevPos, newPos);
+      updateNavigationCamera(newPos, headingMove);
+    } else {
+      // First fix: if victim exists, orient towards victim
+      if (lastVictim) {
+        const headingVictim = bearingDegrees(newPos, lastVictim);
+        updateNavigationCamera(newPos, headingVictim);
+      } else {
+        updateNavigationCamera(newPos, 0);
+      }
+    }
 
     if(lastVictim) drawRoute(rescuerPos, lastVictim);
 
@@ -409,15 +514,19 @@ function startRescuerGeolocation(){
 /* ================== RECENTER BUTTON ================== */
 document.getElementById("recenterBtn").onclick = () => {
   if(rescuerPos){
-    map.setCenter({ lat: rescuerPos.lat, lng: rescuerPos.lng });
+    // In full nav mode, recenter also re-applies camera tilt/heading towards victim if available
+    let heading = 0;
+    if (lastVictim) {
+      heading = bearingDegrees(rescuerPos, lastVictim);
+    }
+    updateNavigationCamera(rescuerPos, heading);
   }
 };
 
 /* Start */
 initMap();
 
-/CREATED BY RUPESH/
+/*CREATED BY RUPESH*/
   </script>
 </body>
 </html>
-
