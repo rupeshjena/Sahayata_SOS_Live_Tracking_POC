@@ -74,7 +74,7 @@
   <script src="https://maps.googleapis.com/maps/api/js?key=AIzaSyCxHxFiNlzq9TUjWiemfQpRXla7NODMJV0&libraries=places"></script>
 
   <script>
-/*CREATED BY RUPESH*/
+/*CREATED BY RUPESH - UPDATED: smooth snapping, adaptive icon size, smooth recenter */
 
 /* ========== CONFIG ========== */
 const SIMULATION_INTERVAL_MS = 10000;
@@ -93,6 +93,22 @@ const SIM_POINTS = [
 const DEST_MOVE_THRESHOLD_M = 4;
 const MIN_ROUTE_INTERVAL_MS = 2500;
 const GPS_INTERPOLATION_MS = 800;
+
+/* snapping interpolation duration (ms) */
+const SNAP_DURATION_MS = 600;
+/* recenter animation duration (ms) */
+const RECENTER_DURATION_MS = 700;
+
+/* adaptive icon scale mapping: zoom -> size (px) */
+const ICON_SIZE_BY_ZOOM = {
+  12: 36,
+  13: 40,
+  14: 44,
+  15: 48,
+  16: 52,
+  17: 56,
+  18: 60
+};
 
 const urlParams = new URLSearchParams(window.location.search);
 const VICTIM_MOBILE = urlParams.get("mobile") || "8093831436";
@@ -156,6 +172,7 @@ function updateNavigationCamera(newPos, heading) {
 
   try {
     // Center on rescuer
+    // We'll animate center elsewhere when needed; here keep immediate center for responsiveness:
     map.setCenter({ lat: newPos.lat, lng: newPos.lng });
 
     // Rotate + tilt if supported (vector map)
@@ -170,12 +187,37 @@ function updateNavigationCamera(newPos, heading) {
   }
 }
 
-/* Rotate map view rescuer -> victim (used after route calc as fallback) */
-function updateNavigationView() {
-  if (!map || !rescuerPos || !lastVictim) return;
+/* Smooth animate map centre + optional heading/tilt over duration */
+function animateMapTo(targetCenter, targetHeading = null, duration = RECENTER_DURATION_MS) {
+  if (!map) return;
+  const start = map.getCenter();
+  const startLat = start.lat(), startLng = start.lng();
+  const endLat = targetCenter.lat, endLng = targetCenter.lng;
+  const startHeading = (typeof map.getHeading === "function") ? map.getHeading() || 0 : 0;
+  const endHeading = targetHeading == null ? startHeading : targetHeading;
+  const startTilt = (typeof map.getTilt === "function") ? map.getTilt() || 0 : 0;
+  const endTilt = 45;
 
-  const heading = bearingDegrees(rescuerPos, lastVictim);
-  updateNavigationCamera(rescuerPos, heading);
+  const steps = Math.max(8, Math.floor(duration / 16));
+  let i = 0;
+  function step() {
+    i++;
+    const t = i / steps;
+    const lat = startLat + (endLat - startLat) * t;
+    const lng = startLng + (endLng - startLng) * t;
+    map.setCenter({ lat, lng });
+
+    if (typeof map.setHeading === "function") {
+      const heading = startHeading + (endHeading - startHeading) * t;
+      map.setHeading(heading);
+    }
+    if (typeof map.setTilt === "function") {
+      const tilt = startTilt + (endTilt - startTilt) * t;
+      map.setTilt(tilt);
+    }
+    if (i < steps) requestAnimationFrame(step);
+  }
+  requestAnimationFrame(step);
 }
 
 /* Heartbeat class toggler */
@@ -200,7 +242,7 @@ function updateStatusLabel() {
   if (latestDurationText) {
     parts.push(`ETA: ${latestDurationText}`);
   }
-  // speed intentionally hidden as requested; later you can include it:
+  // speed intentionally hidden as requested; to show later uncomment:
   // if (latestSpeedKmph != null) parts.push(`Speed: ${latestSpeedKmph.toFixed(1)} km/h`);
 
   statusEl.textContent = parts.join(" — ");
@@ -209,15 +251,13 @@ function updateStatusLabel() {
 /* ========== NEW: route path helpers ========== */
 
 /* Get full path array (LatLng objects) from current directionsRenderer routes.
-   Uses the detailed steps' polyline if possible, otherwise overview_path.
-   Returns array of {lat,lng} */
+   Uses step.path for high fidelity when available. */
 function getCurrentRoutePath() {
   try {
     const dir = directionsRenderer && directionsRenderer.getDirections && directionsRenderer.getDirections();
     if (!dir || !dir.routes || !dir.routes.length) return null;
     const route = dir.routes[0];
 
-    // prefer concatenated step paths for better fidelity at high zoom
     let path = [];
     if (route.legs && route.legs.length) {
       route.legs.forEach(leg => {
@@ -225,9 +265,6 @@ function getCurrentRoutePath() {
           leg.steps.forEach(step => {
             if (step.path && step.path.length) {
               step.path.forEach(p => path.push({ lat: p.lat(), lng: p.lng() }));
-            } else if (step.polyline && step.polyline.points) {
-              // fallback: decode polyline (rare)
-              // we'll not decode manually here; prefer overview_path instead if step.path missing
             }
           });
         }
@@ -236,26 +273,20 @@ function getCurrentRoutePath() {
 
     if (path.length > 0) return path;
 
-    // fallback to overview_path if no steps path available
     if (route.overview_path && route.overview_path.length) {
       return route.overview_path.map(p => ({ lat: p.lat(), lng: p.lng() }));
     }
-
     return null;
   } catch (e) {
     return null;
   }
 }
 
-/* Closest point on polyline (path: array of {lat,lng}) to target {lat,lng}
-   Returns {lat,lng} point on the segment that is closest. */
+/* Closest point on polyline (path: array of {lat,lng}) to target {lat,lng} */
 function closestPointOnPath(target, path) {
   if (!target || !path || !path.length) return null;
 
-  // Helper: treat lat/lng as Cartesian for small distances (good enough)
-  function toXY(p) {
-    return { x: p.lng, y: p.lat };
-  }
+  function toXY(p) { return { x: p.lng, y: p.lat }; }
   function dot(a,b){ return a.x*b.x + a.y*b.y; }
   function dist2(a,b){ const dx=a.x-b.x, dy=a.y-b.y; return dx*dx+dy*dy; }
 
@@ -283,35 +314,77 @@ function closestPointOnPath(target, path) {
     }
   }
 
-  // If path had only 1 point, best may remain null -> use first point
-  if (!best && path.length) {
-    return { lat: path[0].lat, lng: path[0].lng };
-  }
+  if (!best && path.length) return { lat: path[0].lat, lng: path[0].lng };
   return best;
 }
 
-/* Try to snap the rescuer marker to the middle of the route path.
-   If no route available, fall back to normal animate marker to GPS. */
+/* Smoothly move marker from current → target (lat,lng) over duration */
+function smoothMoveMarker(marker, target, duration = SNAP_DURATION_MS) {
+  if (!marker) return;
+  const start = marker.getPosition();
+  if (!start) { marker.setPosition(target); return; }
+  const startLat = start.lat(), startLng = start.lng();
+  const endLat = target.lat, endLng = target.lng;
+  const steps = Math.max(6, Math.floor(duration / 16));
+  let i = 0;
+  function step() {
+    i++;
+    const t = i / steps;
+    const lat = startLat + (endLat - startLat) * t;
+    const lng = startLng + (endLng - startLng) * t;
+    marker.setPosition({ lat, lng });
+    if (i < steps) requestAnimationFrame(step);
+  }
+  requestAnimationFrame(step);
+}
+
+/* Adaptive icon size according to map zoom */
+function updateMarkerIconForZoom() {
+  if (!map || !rescuerMarker) return;
+  const z = Math.round(map.getZoom ? map.getZoom() : 15);
+  // pick nearest defined zoom
+  let size = 44;
+  for (let k in ICON_SIZE_BY_ZOOM) {
+    const zk = parseInt(k,10);
+    if (z >= zk) size = ICON_SIZE_BY_ZOOM[zk];
+  }
+  const svg = encodeURIComponent(`
+	<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+	  <circle cx="12" cy="12" r="11" fill="#1b73e8"/>
+	  <path d="M12 4l6 14-6-3-6 3 6-14z"
+			fill="#ffffff" stroke="#ffffff" stroke-width="0.6" stroke-linejoin="round"/>
+	</svg>`);
+  rescuerMarker.setIcon({
+    url: `data:image/svg+xml;charset=utf-8,${svg}`,
+    scaledSize: new google.maps.Size(size, size),
+    anchor: new google.maps.Point(size/2, size/2)
+  });
+}
+
+/* Try to snap the rescuer marker to the middle of the route path with smoothing.
+   If no route available, animate normally to GPS. */
 function placeRescuerOnRouteOrDirect(newPos) {
   const path = getCurrentRoutePath();
   if (path && path.length >= 2) {
     const cp = closestPointOnPath(newPos, path);
     if (cp) {
-      // Move marker to snapped point (no interpolation to keep it exactly on route)
       if (!rescuerMarker) {
         placeRescuer(cp);
       } else {
-        rescuerMarker.setPosition(cp);
+        // smooth move to snapped point
+        smoothMoveMarker(rescuerMarker, cp, SNAP_DURATION_MS);
+        // update icon size for zoom (in case not yet set)
+        updateMarkerIconForZoom();
       }
       return;
     }
   }
 
   // fallback: animate normally to the raw GPS point
-  if (rescuerMarker) {
-    animateMarkerTo(rescuerMarker, newPos, GPS_INTERPOLATION_MS);
-  } else {
+  if (!rescuerMarker) {
     placeRescuer(newPos);
+  } else {
+    smoothMoveMarker(rescuerMarker, newPos, GPS_INTERPOLATION_MS);
   }
 }
 
@@ -335,6 +408,11 @@ function initMap() {
     map: map,
     suppressMarkers: true,
     preserveViewport: true
+  });
+
+  // adapt icon when user changes zoom (keeps marker scaled to road visually)
+  map.addListener('zoom_changed', () => {
+    updateMarkerIconForZoom();
   });
 
   statusEl.style.display = "block";
@@ -390,15 +468,11 @@ function placeRescuer(p){
   const pos = { lat: p.lat, lng: p.lng };
 
   if(!rescuerMarker){
-    /* MAN ICON SVG — keep compact and centered */
     const svg = encodeURIComponent(`
 	<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
 	  <circle cx="12" cy="12" r="11" fill="#1b73e8"/>
 	  <path d="M12 4l6 14-6-3-6 3 6-14z"
-			fill="#ffffff"
-			stroke="#ffffff"
-			stroke-width="0.6"
-			stroke-linejoin="round"/>
+			fill="#ffffff" stroke="#ffffff" stroke-width="0.6" stroke-linejoin="round"/>
 	</svg>
 	`);
 
@@ -406,7 +480,7 @@ function placeRescuer(p){
       position: pos,
       map: map,
       title: "You (rescuer)",
-      optimized: false, // keep it crisp and allow immediate updates
+      optimized: false,
       icon: {
         url: `data:image/svg+xml;charset=utf-8,${svg}`,
         scaledSize: new google.maps.Size(44,44),
@@ -414,12 +488,15 @@ function placeRescuer(p){
       }
     });
 
+    // ensure size matches zoom immediately
+    updateMarkerIconForZoom();
+
   } else {
     rescuerMarker.setPosition(pos);
   }
 }
 
-/* Smooth animation */
+/* Smooth animation (used as fallback for non-route movement) */
 function animateMarkerTo(marker, targetLatLng, durationMs = GPS_INTERPOLATION_MS){
   if(!marker){ placeRescuer(targetLatLng); return; }
   const start = marker.getPosition();
@@ -570,7 +647,6 @@ function startRescuerGeolocation(){
     const p = { lat: pos.coords.latitude, lng: pos.coords.longitude };
     rescuerPos = p;
     lastRescuerTimeMs = Date.now(); // initialise for speed calc
-    // placeRescuer(p); // don't place raw GPS yet; we prefer snap to route if available
     placeRescuerOnRouteOrDirect(p);
 
     if(lastVictim) drawRoute(rescuerPos, lastVictim);
@@ -596,7 +672,7 @@ function startRescuerGeolocation(){
 
     lastRescuerTimeMs = now;
 
-    // Place rescuer marker snapped to route if a route exists, otherwise animate to GPS point
+    // Place rescuer marker snapped to route if a route exists, otherwise smooth animate to GPS point
     placeRescuerOnRouteOrDirect(newPos);
 
     rescuerPos = newPos;
@@ -625,12 +701,18 @@ function startRescuerGeolocation(){
 /* ================== RECENTER BUTTON ================== */
 document.getElementById("recenterBtn").onclick = () => {
   if(rescuerPos){
-    // In full nav mode, recenter also re-applies camera tilt/heading towards victim if available
     let heading = 0;
     if (lastVictim) {
       heading = bearingDegrees(rescuerPos, lastVictim);
     }
-    updateNavigationCamera(rescuerPos, heading);
+    // Smooth recenter (animate)
+    animateMapTo({ lat: rescuerPos.lat, lng: rescuerPos.lng }, heading, RECENTER_DURATION_MS);
+  } else {
+    // fallback: immediate
+    if (rescuerMarker && rescuerMarker.getPosition) {
+      const p = rescuerMarker.getPosition();
+      map.panTo(p);
+    }
   }
 };
 
