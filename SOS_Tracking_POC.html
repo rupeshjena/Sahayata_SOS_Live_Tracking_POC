@@ -117,7 +117,7 @@ const statusEl = document.getElementById('status');
 /* NEW: status-related globals */
 let latestDistanceText = "";
 let latestDurationText = "";
-let latestSpeedKmph    = null;
+let latestSpeedKmph    = null; // kept for future; hidden from UI per request
 let lastRescuerTimeMs  = null;
 
 /* Haversine */
@@ -200,11 +200,119 @@ function updateStatusLabel() {
   if (latestDurationText) {
     parts.push(`ETA: ${latestDurationText}`);
   }
-  if (latestSpeedKmph != null) {
-    parts.push(`Speed: ${latestSpeedKmph.toFixed(1)} km/h`);
-  }
+  // speed intentionally hidden as requested; later you can include it:
+  // if (latestSpeedKmph != null) parts.push(`Speed: ${latestSpeedKmph.toFixed(1)} km/h`);
 
   statusEl.textContent = parts.join(" — ");
+}
+
+/* ========== NEW: route path helpers ========== */
+
+/* Get full path array (LatLng objects) from current directionsRenderer routes.
+   Uses the detailed steps' polyline if possible, otherwise overview_path.
+   Returns array of {lat,lng} */
+function getCurrentRoutePath() {
+  try {
+    const dir = directionsRenderer && directionsRenderer.getDirections && directionsRenderer.getDirections();
+    if (!dir || !dir.routes || !dir.routes.length) return null;
+    const route = dir.routes[0];
+
+    // prefer concatenated step paths for better fidelity at high zoom
+    let path = [];
+    if (route.legs && route.legs.length) {
+      route.legs.forEach(leg => {
+        if (leg.steps && leg.steps.length) {
+          leg.steps.forEach(step => {
+            if (step.path && step.path.length) {
+              step.path.forEach(p => path.push({ lat: p.lat(), lng: p.lng() }));
+            } else if (step.polyline && step.polyline.points) {
+              // fallback: decode polyline (rare)
+              // we'll not decode manually here; prefer overview_path instead if step.path missing
+            }
+          });
+        }
+      });
+    }
+
+    if (path.length > 0) return path;
+
+    // fallback to overview_path if no steps path available
+    if (route.overview_path && route.overview_path.length) {
+      return route.overview_path.map(p => ({ lat: p.lat(), lng: p.lng() }));
+    }
+
+    return null;
+  } catch (e) {
+    return null;
+  }
+}
+
+/* Closest point on polyline (path: array of {lat,lng}) to target {lat,lng}
+   Returns {lat,lng} point on the segment that is closest. */
+function closestPointOnPath(target, path) {
+  if (!target || !path || !path.length) return null;
+
+  // Helper: treat lat/lng as Cartesian for small distances (good enough)
+  function toXY(p) {
+    return { x: p.lng, y: p.lat };
+  }
+  function dot(a,b){ return a.x*b.x + a.y*b.y; }
+  function dist2(a,b){ const dx=a.x-b.x, dy=a.y-b.y; return dx*dx+dy*dy; }
+
+  const T = toXY(target);
+  let best = null;
+  let bestDist = Infinity;
+
+  for (let i=0;i<path.length-1;i++){
+    const a = toXY(path[i]);
+    const b = toXY(path[i+1]);
+    const ab = { x: b.x - a.x, y: b.y - a.y };
+    const at = { x: T.x - a.x, y: T.y - a.y };
+    const abLen2 = dot(ab,ab);
+    let t = 0;
+    if (abLen2 > 0) {
+      t = dot(at,ab) / abLen2;
+      if (t < 0) t = 0;
+      if (t > 1) t = 1;
+    }
+    const proj = { x: a.x + ab.x * t, y: a.y + ab.y * t };
+    const d2 = dist2(proj, T);
+    if (d2 < bestDist) {
+      bestDist = d2;
+      best = { lat: proj.y, lng: proj.x };
+    }
+  }
+
+  // If path had only 1 point, best may remain null -> use first point
+  if (!best && path.length) {
+    return { lat: path[0].lat, lng: path[0].lng };
+  }
+  return best;
+}
+
+/* Try to snap the rescuer marker to the middle of the route path.
+   If no route available, fall back to normal animate marker to GPS. */
+function placeRescuerOnRouteOrDirect(newPos) {
+  const path = getCurrentRoutePath();
+  if (path && path.length >= 2) {
+    const cp = closestPointOnPath(newPos, path);
+    if (cp) {
+      // Move marker to snapped point (no interpolation to keep it exactly on route)
+      if (!rescuerMarker) {
+        placeRescuer(cp);
+      } else {
+        rescuerMarker.setPosition(cp);
+      }
+      return;
+    }
+  }
+
+  // fallback: animate normally to the raw GPS point
+  if (rescuerMarker) {
+    animateMarkerTo(rescuerMarker, newPos, GPS_INTERPOLATION_MS);
+  } else {
+    placeRescuer(newPos);
+  }
 }
 
 /* ================== INIT MAP ================== */
@@ -212,14 +320,14 @@ function initMap() {
   map = new google.maps.Map(document.getElementById('map'), {
     center: { lat: SIM_POINTS[0].lat, lng: SIM_POINTS[0].lng },
     zoom: 15,
-    maxZoom: 18,               // keep zoom reasonable to avoid visual distortions
+    maxZoom: 18,
     gestureHandling: 'greedy',
     tilt: 0,
 
     mapTypeControl: false,
     streetViewControl: false,
     fullscreenControl: false,
-    zoomControl: false   // ⛔ hide zoom buttons
+    zoomControl: false
   });
 
   directionsService = new google.maps.DirectionsService();
@@ -282,7 +390,7 @@ function placeRescuer(p){
   const pos = { lat: p.lat, lng: p.lng };
 
   if(!rescuerMarker){
-    /* MAN ICON SVG */
+    /* MAN ICON SVG — keep compact and centered */
     const svg = encodeURIComponent(`
 	<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
 	  <circle cx="12" cy="12" r="11" fill="#1b73e8"/>
@@ -298,10 +406,11 @@ function placeRescuer(p){
       position: pos,
       map: map,
       title: "You (rescuer)",
+      optimized: false, // keep it crisp and allow immediate updates
       icon: {
         url: `data:image/svg+xml;charset=utf-8,${svg}`,
-        scaledSize: new google.maps.Size(40,40),
-        anchor: new google.maps.Point(25,25)
+        scaledSize: new google.maps.Size(44,44),
+        anchor: new google.maps.Point(22,22)
       }
     });
 
@@ -313,20 +422,20 @@ function placeRescuer(p){
 /* Smooth animation */
 function animateMarkerTo(marker, targetLatLng, durationMs = GPS_INTERPOLATION_MS){
   if(!marker){ placeRescuer(targetLatLng); return; }
-
   const start = marker.getPosition();
+  const startLat = start.lat(), startLng = start.lng();
+  const endLat = targetLatLng.lat, endLng = targetLatLng.lng;
   const steps = Math.max(6, Math.floor(durationMs / 50));
   let i = 0;
-
-  function step(){
+  const tick = () => {
     i++;
-    const t = i/steps;
-    const lat = start.lat() + (targetLatLng.lat - start.lat()) * t;
-    const lng = start.lng() + (targetLatLng.lng - start.lng()) * t;
-    marker.setPosition({lat,lng});
-    if(i < steps) requestAnimationFrame(step);
-  }
-  requestAnimationFrame(step);
+    const t = i / steps;
+    const lat = startLat + (endLat - startLat) * t;
+    const lng = startLng + (endLng - startLng) * t;
+    marker.setPosition({ lat, lng });
+    if(i < steps) requestAnimationFrame(tick);
+  };
+  requestAnimationFrame(tick);
 }
 
 /* Directions (Distance + ETA + navigation-like rotation + heartbeat) */
@@ -461,34 +570,34 @@ function startRescuerGeolocation(){
     const p = { lat: pos.coords.latitude, lng: pos.coords.longitude };
     rescuerPos = p;
     lastRescuerTimeMs = Date.now(); // initialise for speed calc
-    placeRescuer(p);
+    // placeRescuer(p); // don't place raw GPS yet; we prefer snap to route if available
+    placeRescuerOnRouteOrDirect(p);
 
     if(lastVictim) drawRoute(rescuerPos, lastVictim);
-  });
+  }, err => {
+    console.warn('getCurrentPosition error', err);
+  }, { enableHighAccuracy: true, timeout:8000 });
 
   navigator.geolocation.watchPosition(pos => {
     const newPos = { lat: pos.coords.latitude, lng: pos.coords.longitude };
     const now = Date.now();
     const prevPos = rescuerPos ? { lat: rescuerPos.lat, lng: rescuerPos.lng } : null;
 
-    // Compute speed based on previous rescuerPos and timestamp
+    // Compute speed based on previous rescuerPos and timestamp (kept but not shown)
     if (rescuerPos && lastRescuerTimeMs != null) {
       const dtSec = (now - lastRescuerTimeMs) / 1000;
       const distM = distanceMeters(rescuerPos, newPos);
       if (dtSec > 0.5 && distM > 0.5) { // basic noise filter
         const speed = (distM / dtSec) * 3.6; // m/s → km/h
         latestSpeedKmph = speed;
-        updateStatusLabel();
+        // speed hidden currently; to show uncomment in updateStatusLabel
       }
     }
 
     lastRescuerTimeMs = now;
 
-    if(rescuerMarker){
-      animateMarkerTo(rescuerMarker, newPos);
-    } else {
-      placeRescuer(newPos);
-    }
+    // Place rescuer marker snapped to route if a route exists, otherwise animate to GPS point
+    placeRescuerOnRouteOrDirect(newPos);
 
     rescuerPos = newPos;
 
@@ -508,7 +617,9 @@ function startRescuerGeolocation(){
 
     if(lastVictim) drawRoute(rescuerPos, lastVictim);
 
-  }, null, { enableHighAccuracy:true, maximumAge:2000, timeout:10000 });
+  }, err => {
+    console.warn('watchPosition error', err);
+  }, { enableHighAccuracy:true, maximumAge:2000, timeout:10000 });
 }
 
 /* ================== RECENTER BUTTON ================== */
@@ -530,4 +641,3 @@ initMap();
   </script>
 </body>
 </html>
-
